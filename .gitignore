@@ -1,0 +1,45 @@
+.env
+CLAUDE.md
+__pycache__/
+*.pyc
+output/
+data/geo/
+data/osm/
+data/uploads/
+data/messenger/
+data/liner_calls.jsonl
+data/화풍_레퍼런스/
+시험결과/
+제출/
+자산/얼굴/시트/
+
+# ---- 실수로 올라가지 않게 막아 두는 것(2026-11-23 공개 전 점검) ----
+# 키 · 인증서
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+# 받은 자료 · 대화 · 호출 기록 · 보관한 그림은 전부 깃 밖(data 아래에는 깃이 관리하는 파일이 없다)
+/data/
+# 영상 · 소리 · 묶음 같은 무거운 파일(만든 결과물은 output 에 두고 깃에는 넣지 않는다)
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.mp3
+*.wav
+*.m4a
+*.zip
+*.7z
+*.bundle
+*.psd
+# 도구 · 운영체제가 만드는 것
+.claude/
+.venv/
+venv/
+node_modules/
+.DS_Store
+Thumbs.db
+*.log

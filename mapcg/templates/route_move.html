@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>지도 그래픽 미리보기</title>
+<!--
+  경로 이동 지도 — 공개 지도(OSM) 도형과 실제 주행 경로(OSRM)를 캔버스에 코드로 그린다. 그림 생성은 쓰지 않는다.
+  바탕 지도와 지명 글자는 basemap.js 가 그리고, 여기서는 경로·지점·이동 아이콘·얼굴·시간 흐름을 맡는다.
+  그리는 도구는 작가 도구(brush.js: 붓펜 선·물감 질감·종이 마감), 색·재질·굵기는 디자인 기준 묶음(mapskin.js)에서만 가져온다.
+  형식(JOB.map_style)
+    route_move   경로 이동 지도
+    nav          네비 지도 — 같은 그림에 남은 거리 표시가 붙는다
+  보기 방식(?view=)·멈춤(?t=)·내보내기(?export=1)·검수판(&times=)은 무대(stage.js)가 맡는다. 주소 옵션은 그 파일에 적혀 있다.
+-->
+<style>
+  html,body{margin:0;height:100%;background:#15171b;overflow:hidden}
+  body.bare{background:transparent}
+  #c{position:absolute;left:0;top:0;transform-origin:0 0}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="stage.js"></script>
+<script src="job.js"></script>
+<script src="map-data.js"></script>
+<script src="brush.js"></script>
+<script src="mapskin.js"></script>
+<script src="basemap.js"></script>
+<script>
+"use strict";
+const J=window.JOB, M=window.MAPDATA;
+const ST=Stage(J,window.MAPSKIN), {X,PW,PH}=ST;      // 무대: 보기 방식·재생·내보내기를 맡는다. X = 그릴 캔버스, PW×PH = 지도 자리
+const DUR=J.duration_seconds;
+const NAV=J.map_style==='nav';                                                           // 네비 지도: 남은 거리 표시가 붙는다
+const RIDE=J.face_mode==='ride'&&(J.vehicle==='bus'||J.vehicle==='boat'||(!!J.vehicle_image&&J.vehicle!=='walk'&&J.vehicle!=='dot'))&&(J.faces||[]).length>0;      // 얼굴이 버스·배(그림 아이콘 포함)에 타고 간다
+// 따라가는 카메라(J.camera.mode==='follow'): 바탕을 화면의 zoom 배(MW×MH)로 크게 그리고, 화면은 그 위에서 이동 아이콘을 따라간다.
+// 지도에 붙은 것(길·이름표·들르는 곳·아이콘)은 큰 바탕 위에, 화면에 붙은 것(제목판·남은 거리·출처·종이 마감)은 화면 위에 그린다
+const CAM=J.camera&&J.camera.mode==='follow'&&J.camera.zoom>1?J.camera:null;
+const MW=CAM?Math.round(PW*CAM.zoom):PW, MH=CAM?Math.round(PH*CAM.zoom):PH;
+const K=MapKit(M,MW,MH,CAM?{U:ST.U}:undefined), {U,px,B,SK}=K;      // U = 굵기·글자 크기 단위(화면 높이 540 기준), B = 작가 도구, SK = 디자인 기준 묶음
+const KF=CAM?MapKit(M,PW,PH):K;              // 종이 마감은 화면 크기로
+B.c=X;                                       // 작가 도구는 화면 캔버스에 그린다(바탕 층을 구울 때만 K.base 가 잠깐 바꾼다)
+const SAFE=ST.SAFE, HU=U*(SK.scale||1);      // SAFE = 글자가 넘지 말아야 할 가장자리 여백(안전 영역), HU = 이름표·거리 표시의 크기 단위(화풍이 키울 수 있다)
+const VS=J.vehicle_scale||1;                 // 이동 아이콘 크기 배율(가까이서 보는 컷에서 키운다)
+if(J.vehicle_color){SK.bus={...SK.bus,body:J.vehicle_color,band:'#ffffff'};SK.car={...SK.car,body:J.vehicle_color}}      // 의뢰가 색을 정했을 때('빨간 버스')
+const EDGE={l:Math.max(6*U,SAFE.l),t:Math.max(6*U,SAFE.t),r:Math.max(6*U,SAFE.r),b:Math.max(6*U,SAFE.b)};
+
+// ---------- 경로: 자리 픽셀로 바꾸고 거리표를 만든다 ----------
+const R=M.route.map(px), cum=[0];
+for(let i=1;i<R.length;i++)cum.push(cum[i-1]+Math.hypot(R[i][0]-R[i-1][0],R[i][1]-R[i-1][1]));
+const LEN=cum[cum.length-1], A=R[0], Z=R[R.length-1];        // A 출발, Z 도착
+function at(s){s=Math.max(0,Math.min(LEN,s));let lo=1,hi=cum.length-1;
+  while(lo<hi){const m=(lo+hi)>>1;if(cum[m]<s)lo=m+1;else hi=m}
+  const f=(s-cum[lo-1])/((cum[lo]-cum[lo-1])||1);
+  return[R[lo-1][0]+(R[lo][0]-R[lo-1][0])*f,R[lo-1][1]+(R[lo][1]-R[lo-1][1])*f]}
+// 붓펜 선이 따라갈 점: 길을 따라 고른 간격으로 찍어 둔다. 점의 자리가 고정이라, 선이 자라도 이미 그은 부분은 떨리지 않는다
+const STEP=4*U, RS=[];
+for(let s=0;s<LEN;s+=STEP)RS.push(at(s));
+RS.push(Z);
+
+// ---------- 바탕 지도(한 번만 그린다) + 갈 길: 종이 띠 위에 붓으로 툭툭 끊어 그은 선 ----------
+const base=K.base(b=>{
+  b.beginPath();b.moveTo(A[0],A[1]);for(const p of RS)b.lineTo(p[0],p[1]);
+  b.strokeStyle=SK.route.bed;b.lineWidth=(SK.route.w+7)*U;b.stroke();
+  for(let i=0;i+2<RS.length;i+=4)B.ink(RS.slice(i,i+3),3.4*U,SK.route.ahead,40+i,{taper:.3,wob:.2})});
+
+// ---------- 글자 자리 잡기: 출발·도착 이름표, 남은 거리 표시, 지명 글자 ----------
+// 글자 너비를 재야 하므로 글꼴이 다 불러와진 뒤(첫 화면을 그릴 때) 한 번만 한다 — 먼저 재면 다른 글꼴의 너비로 자리가 잡힌다
+const NAME_FONT=`900 ${22*HU}px ${FONT}`;
+const VERT=Math.abs(Z[1]-A[1])>=Math.abs(Z[0]-A[0]);     // 위아래로 가는 길이면 이름표를 옆에, 아니면 아래에
+let KEEP=[];                                             // 화풍이 지도 위에 얹는 것(제목판 등)의 자리 — 이름표와 지명 글자가 피한다
+const CAP_FONT=`800 ${19*HU}px ${FONT}`;                 // 이름표 아래 줄에 적는 설명(J.from_caption · J.to_caption: '미션2 보드게임', '발견') — 이름 다음으로 크게 읽혀야 한다
+function pinBox(name,p,isStart){const cap=(isStart?J.from_caption:J.to_caption)||'';
+  X.font=CAP_FONT;const wc=cap?X.measureText(cap).width:0;X.font=NAME_FONT;
+  const w=Math.max(X.measureText(name).width,wc)+26*HU,h=(cap?66:38)*HU,gap=30*U;let x,y;
+  if(VERT){const right=isStart?(Z[0]<A[0]):(Z[0]>=A[0]);x=right?p[0]+gap:p[0]-gap-w;y=p[1]-h/2;
+    if(x<EDGE.l)x=p[0]+gap;if(x+w>MW-EDGE.r)x=p[0]-gap-w}
+  else{x=p[0]-w/2;y=p[1]+gap*0.6}
+  const clampX=v=>Math.max(EDGE.l,Math.min(MW-w-EDGE.r,v)),clampY=v=>Math.max(EDGE.t,Math.min(MH-h-EDGE.b,v));
+  // 이름표가 갈 길을 덮지 않게: 정해 둔 자리가 길 위면 위·아래·오른쪽·왼쪽 가운데 길이 지나지 않는 쪽으로(걸어오는 아이콘을 가리지 않는다)
+  const onRoute=(bx,by)=>RS.some(q=>q[0]>bx-6*U&&q[0]<bx+w+6*U&&q[1]>by-6*U&&q[1]<by+h+6*U);
+  // 걷는 사람의 표지·배는 점 위로 솟아 있다 — 그 자리(걷는 사람 점 위 약 62, 배 약 52 · 배는 옆으로도 넓다)는 비워 둔다
+  const boat=J.vehicle==='boat',vs=VIMG&&VIMG.naturalWidth&&J.vehicle!=='walk'&&J.vehicle!=='dot'?vimgSize():null,
+    lift=vs?(vs.h+4)*U*VS:J.vehicle==='walk'?62*U*VS:boat?52*U*VS:0,half=(vs?vs.w/2:boat?(RIDE?faces.length*13.5+36:44):26)*U*VS,
+    underMark=(bx,by)=>lift&&bx<p[0]+half&&bx+w>p[0]-half&&by<p[1]&&by+h>p[1]-lift;
+  const free=[[x,y],[p[0]-w/2,p[1]+gap*.6],[p[0]-w/2,p[1]-gap*.6-h-lift],[p[0]+gap,p[1]-h/2],[p[0]-gap-w,p[1]-h/2]].map(([a,b])=>[clampX(a),clampY(b)]).find(([a,b])=>!onRoute(a,b)&&!underMark(a,b));
+  if(free)[x,y]=free;
+  x=clampX(x);y=clampY(y);
+  for(const k of CAM?[]:CREDIT.w?[...KEEP,[CREDIT.x,CREDIT.y,CREDIT.x+CREDIT.w,CREDIT.y+CREDIT.h]]:KEEP)if(x<k[2]&&x+w>k[0]&&y<k[3]&&y+h>k[1])y=(k[1]+k[3])/2>PH/2?k[1]-h-4*U:k[3]+4*U;      // 얹는 것과 겹치면 그 위(아래쪽 것)나 아래(위쪽 것)로 비킨다
+  return{x,y,w,h,name,cap}}
+const HUD={x:Math.max(14*U,SAFE.l),y:Math.max(14*U,SAFE.t),w:0,h:52*HU};       // 남은 거리 표시 자리(네비 지도에서만)
+let SB,EB,lab=null;
+// 지도 출처(© OpenStreetMap contributors …): 납품하는 화면 안에 적혀 있어야 한다. 아래 가장자리 안쪽에 작게, 얹는 판이 있으면 그 위에 둔다
+// 작게, 안전 영역의 맨 아래 줄에 둔다. 영상 전체 길이의 앞 25% 동안만 보인다(J.credit_window = 이 화면에서 보이는 [시작, 끝] 초)
+const CREDIT={text:J.attribution||'',px:8*U,x:0,y:0,w:0,h:0,win:J.credit_window||[0,DUR*.25]};
+function credit(){if(!CREDIT.text)return;
+  const room=PW-EDGE.l-EDGE.r;let p=CREDIT.px;X.font=`700 ${p}px ${FONT}`;
+  while(p>6*U&&X.measureText(CREDIT.text).width>room){p-=.5;X.font=`700 ${p}px ${FONT}`}
+  const w=X.measureText(CREDIT.text).width,h=p*1.3,hit=(x,y)=>KEEP.some(k=>x<k[2]&&x+w>k[0]&&y<k[3]&&y+h>k[1]);
+  let x=PW-EDGE.r-w,y=PH-EDGE.b-h;
+  if(hit(x,y)){let found=false;                                      // 맨 아래 줄에서 얹은 판 사이의 빈 곳을 오른쪽부터 찾는다
+    for(let c=PW-EDGE.r-w;c>=EDGE.l;c-=6*U)if(!hit(c,y)){x=c;found=true;break}
+    if(!found)for(const k of [...KEEP].sort((a,b)=>b[1]-a[1]))if(x<k[2]&&x+w>k[0]&&y<k[3]&&y+h>k[1])y=k[1]-h}      // 빈 곳이 없으면 판 위로
+  Object.assign(CREDIT,{px:p,x,y,w,h})}
+function drawCredit(t){if(!CREDIT.w)return;
+  const a=Math.min(1,(t-CREDIT.win[0])/.01+1,(CREDIT.win[1]-t)/.3);if(!(a>0)||t<CREDIT.win[0])return;      // 정해진 동안만 보이고, 끝에서 옅어지며 사라진다
+  X.save();X.globalAlpha=a;X.font=`700 ${CREDIT.px}px ${FONT}`;X.textAlign='left';X.textBaseline='middle';X.lineJoin='round';
+  X.lineWidth=CREDIT.px*.32;X.strokeStyle=SK.label.halo||'#fff';X.strokeText(CREDIT.text,CREDIT.x,CREDIT.y+CREDIT.h/2);
+  X.fillStyle=INK;X.fillText(CREDIT.text,CREDIT.x,CREDIT.y+CREDIT.h/2);X.restore()}
+function setup(){
+  if(NAV){X.font=`900 ${24*HU}px ${FONT}`;const wb=X.measureText('00.0km').width;X.font=`700 ${13*HU}px ${FONT}`;
+    HUD.w=62*HU+Math.max(wb,X.measureText(GOAL+'까지').width)+16*HU}
+  if(SK.keep)KEEP=SK.keep({X,U,PW,PH,J,SAFE,HUD:NAV?HUD:null,R:CAM?[]:RS});
+  credit();      // 출처 자리를 먼저 잡는다 — 이름표가 그 글자를 피해 놓인다
+  SB=pinBox(J.from.name,A,true);EB=pinBox(J.to.name,Z,false);
+  // 지명·다리·역 글자(한 번만 그린다). 이름표·지점·경로·거리 표시·얹는 것·출처·들르는 곳의 자리는 비워 둔다
+  // (카메라가 따라갈 때 화면에 붙은 것은 지도와 따로 움직이므로 비워 두지 않는다)
+  const boxes=[SB,EB].map(o=>[o.x,o.y,o.x+o.w,o.y+o.h]).concat(CAM?[]:KEEP);
+  if(NAV&&!CAM)boxes.push([HUD.x-6*U,HUD.y-6*U,HUD.x+HUD.w+6*U,HUD.y+HUD.h+6*U]);
+  for(const p of [A,Z])boxes.push([p[0]-20*U,p[1]-20*U,p[0]+20*U,p[1]+20*U]);
+  stopBoxes(boxes);
+  if(CREDIT.w&&!CAM)boxes.push([CREDIT.x-4*U,CREDIT.y-2*U,CREDIT.x+CREDIT.w+4*U,CREDIT.y+CREDIT.h+2*U]);
+  for(const p of [A,Z])boxes.push([p[0]-34*U,p[1]-34*U,p[0]+34*U,p[1]+34*U]);
+  for(let s=0;s<=LEN;s+=18*U){const p=at(s);boxes.push([p[0]-7*U,p[1]-7*U,p[0]+7*U,p[1]+7*U])}
+  // 이름표와 점을 잇는 선(pin 이 긋는 선과 같은 끝점) 위에도 지명 글자를 두지 않는다 — 글자가 선에 꿰여 보이지 않게
+  for(const [o,p] of [[SB,A],[EB,Z]]){const q=[Math.max(o.x,Math.min(o.x+o.w,p[0])),Math.max(o.y,Math.min(o.y+o.h,p[1]))],L=Math.hypot(q[0]-p[0],q[1]-p[1]);
+    for(let s=0;s<=L;s+=12*U){const t=L?s/L:0,x=p[0]+(q[0]-p[0])*t,y=p[1]+(q[1]-p[1])*t;boxes.push([x-9*U,y-9*U,x+9*U,y+9*U])}}
+  lab=K.labels(boxes,new Set([J.from.name,J.to.name]),SK.safe?EDGE:null)}
+
+// ---------- 얼굴 ----------
+const faces=(J.faces||[]).map(src=>{if(!src)return null;const im=new Image();im.src=src;return im});
+const FS=J.face_scale||1;      // 얼굴 크기 배율(의뢰의 face_scale — '얼굴 1.2배')
+// 그림 이동 아이콘(J.vehicle_image — Liner 그림 모델로 그린 배 등 투명 PNG, 오른쪽을 보고 있다). 없으면 코드로 그린 아이콘
+const VIMG=J.vehicle_image?Object.assign(new Image(),{src:J.vehicle_image}):null;
+const FACE_COLORS=['#ff8a65','#4db6ac','#9575cd','#f6bf26','#64b5f6','#e57373','#81c784','#ba68c8'];
+// 얼굴 하나를 동그랗게 잘라 그린다. 파일이 없으면 번호 동그라미.
+// 바탕을 지운(투명) 얼굴 그림도 깨끗하게: 동그라미를 종이색으로 먼저 깔고 얹는다(뒤의 창문 · 배 그림이 비치지 않게)
+function face(i,cx,cy,r,font){X.save();X.beginPath();X.arc(cx,cy,r,0,7);X.clip();const im=faces[i];
+  if(im&&im.complete&&im.naturalWidth){X.fillStyle=SK.paper;X.fillRect(cx-r,cy-r,2*r,2*r);const k=Math.max(2*r/im.naturalWidth,2*r/im.naturalHeight);
+    X.drawImage(im,cx-im.naturalWidth*k/2,cy-im.naturalHeight*k/2,im.naturalWidth*k,im.naturalHeight*k)}
+  else{X.fillStyle=FACE_COLORS[i%FACE_COLORS.length];X.fillRect(cx-r,cy-r,2*r,2*r);
+    X.fillStyle='#fff';X.font=`800 ${font}px ${FONT}`;X.textAlign='center';X.textBaseline='middle';X.fillText(String(i+1),cx,cy+r*0.06)}
+  X.restore()}
+// 아이콘 위에 떠 있는 얼굴 줄: 종이 동그라미에 얼굴을 넣고 붓펜으로 테를 두른다
+const BADGE=B.ell(0,0,20,20);
+// 얼굴 줄은 그리는 바탕(MW) 안으로만 묶는다. 따라가는 카메라는 화면보다 큰 바탕 위에 그리므로, 화면 너비(PW)로 묶으면
+// 차가 바탕의 오른쪽으로 가는 동안 얼굴이 한 자리에 걸려 차와 떨어진다(11-24 상암동 SUV 의뢰)
+function drawFaces(x,bottom,t){const n=faces.length;if(!n)return;
+  const r=17*U*FS,gap=8*U*FS,w=n*2*r+(n-1)*gap,x0=Math.max(10*U,Math.min(MW-w-10*U,x-w/2));
+  for(let i=0;i<n;i++){const cx=x0+r+i*(2*r+gap),cy=Math.max(r+8*U,bottom-r+Math.sin(t*6+i*1.3)*2*U);
+    X.save();X.translate(cx,cy);X.scale(U*FS,U*FS);B.paint(BADGE,{fill:SK.paper,tex:'paper',drop:2.5,pool:0});X.restore();
+    face(i,cx,cy,r,18*U*FS);
+    X.save();X.translate(cx,cy);X.scale(U*FS,U*FS);B.outline(BADGE,2.6/FS,INK,80+i);X.restore()}}
+
+// ---------- 이동 아이콘(코드로 그림). 원점 = 바퀴가 닿는 바닥 가운데, 오른쪽이 앞 ----------
+function ground(w){X.fillStyle=SK.shadow;X.beginPath();X.ellipse(0,1.5,w,4.5,0,0,7);X.fill()}
+function wheel(wx,wy,r){X.save();X.translate(wx,wy);
+  B.art(B.ell(0,0,r,r),{fill:SK.bus.wheel,tex:null,lw:2,seed:33,pool:0});
+  X.fillStyle=SK.bus.hub;X.beginPath();X.arc(0,0,r*.38,0,7);X.fill();X.restore()}
+const CAR_BODY='M-22 -6 L-22 -13 Q-22 -16 -18 -16 L-13 -16 L-8 -24 L8 -24 L14 -16 L19 -15 Q23 -14 23 -10 L23 -6 Z';
+// SUV: 지붕이 뒤까지 높게 이어지는 상자 모양
+const SUV_BODY='M-23 -6 L-23 -19 Q-23 -26 -17 -26 L7 -26 Q10 -26 12 -23 L16 -17 L20 -16 Q24 -15 24 -11 L24 -6 Z';
+const SUV_GLASS='M-18 -16.5 L-18 -22.5 L7 -22.5 L11.5 -16.5 Z';
+const CAR_GLASS='M-9 -16 L-5.5 -21.5 L6.5 -21.5 L10.5 -16 Z';
+function vehicle(x,y,dir){X.save();X.translate(x,y);X.scale(U*VS,U*VS);
+  if(J.vehicle==='dot'){B.art(B.ell(0,-11,10.5,10.5),{fill:SK.route.fill,lw:3,seed:31,shade:2,drop:2.5,pool:3});X.restore();return}
+  const bus=J.vehicle!=='car'&&J.vehicle!=='suv',suv=J.vehicle==='suv';
+  ground(bus?29:24);X.scale(dir,1);
+  if(bus){
+    B.art(B.rrd(-27,-31,54,26,7),{fill:SK.bus.body,lw:2.8,seed:37,shade:2.5,pool:3,rim:3});
+    X.fillStyle=SK.bus.band;X.fillRect(-24.5,-13,49,4.5);
+    for(let i=0;i<3;i++)B.art(B.rrd(-21+i*11.5,-26.5,9.5,9,1.8),{fill:SK.bus.glass,tex:null,lw:1.5,seed:38+i,pool:0});
+    B.art(B.rrd(15,-26.5,8,11,1.8),{fill:SK.bus.glass,tex:null,lw:1.5,seed:42,pool:0});
+    X.fillStyle=SK.bus.lamp;X.fillRect(23,-12.5,3,3.4);
+    wheel(-14,-5,5.6);wheel(14,-5,5.6)}
+  else{
+    B.art(suv?SUV_BODY:CAR_BODY,{fill:SK.car.body,lw:2.6,seed:35,shade:2,pool:3,rim:3});
+    B.art(suv?SUV_GLASS:CAR_GLASS,{fill:SK.car.glass,tex:null,lw:1.6,seed:36,pool:0});
+    if(suv){X.strokeStyle=INK;X.lineWidth=1.6;X.beginPath();X.moveTo(-5,-22.5);X.lineTo(-5,-16.5);X.stroke()}      // 앞뒤 창을 가르는 기둥
+    X.fillStyle=SK.bus.lamp;X.fillRect(19.5,-13,3,3.2);
+    wheel(-13,-5,5.4);wheel(13,-5,5.4)}
+  X.restore()}
+
+// 걸어서 가는 사람(J.vehicle==='walk'): 이름(J.who · 'A')을 적은 둥근 표지가 꼬리로 땅 위의 점을 가리키고, 걸음마다 살짝 튄다.
+// 각자 이동의 컷마다 사람의 색이 다르다(화풍이 SK.people 로 정할 수 있다). 이름이 없으면 사람 모양
+const WHO=String(J.who||'').trim(), PEOPLE=SK.people||['#ff6f61','#6c96f2','#62d6a4','#a98bf0','#ff8a5c','#4fcfd6','#ff7fae','#ffcf3f'];
+const WCOL=PEOPLE[(((J.cut&&J.cut.n)||1)-1)%PEOPLE.length];
+function walker(x,y,t,moving){const hop=moving?Math.abs(Math.sin(t*8.5))*3.6:0;
+  X.save();X.translate(x,y);X.scale(U*VS,U*VS);
+  X.fillStyle=SK.shadow;X.beginPath();X.ellipse(0,1,12-hop*.8,4.2,0,0,7);X.fill();                  // 땅 그림자(튀면 작아진다)
+  B.art(B.ell(0,0,4.6,4.6),{fill:INK,tex:null,lw:0,seed:50,pool:0});                                // 발밑 점
+  X.translate(0,-hop);
+  X.font=`900 21px ${FONT}`;const tw=WHO?X.measureText(WHO).width:0,H=40,W=Math.max(H,tw+26),top=-H-15;
+  B.art(`M-8 ${top+H-5} L0 -4 L8 ${top+H-5} Z`,{fill:WCOL,lw:2.6,seed:52,pool:0});                   // 꼬리
+  B.art(B.rrd(-W/2,top,W,H,H/2),{fill:WCOL,tex:'paint',lw:3,seed:53,drop:3,shade:2,pool:3,rim:3});
+  const cy=top+H/2;
+  if(WHO){X.textAlign='center';X.textBaseline='middle';X.lineJoin='round';
+    X.lineWidth=5;X.strokeStyle=INK;X.strokeText(WHO,0,cy+1);X.fillStyle='#fff';X.fillText(WHO,0,cy+1)}
+  else{X.fillStyle='#fff';X.strokeStyle=INK;X.lineWidth=2.4;
+    X.beginPath();X.arc(0,cy-6,6,0,7);X.fill();X.stroke();                                           // 머리
+    X.beginPath();X.moveTo(-10,cy+13);X.quadraticCurveTo(-10,cy+2,0,cy+2);X.quadraticCurveTo(10,cy+2,10,cy+13);X.closePath();X.fill();X.stroke()}      // 어깨
+  X.restore()}
+
+// 얼굴이 탄 버스: 창문 하나에 얼굴 하나. 얼굴은 진행 방향이 바뀌어도 뒤집지 않는다.
+const FACE_R=12.5*FS, FACE_RING=B.ell(0,0,FACE_R,FACE_R);
+function busRide(x,y,dir,t){const n=faces.length,WIN=27*FS,bw=n*WIN+30,bh=38,top=-bh-6;
+  X.save();X.translate(x,y);X.scale(U*VS,U*VS);
+  ground(bw*0.52);
+  X.save();X.scale(dir,1);
+  B.art(B.rrd(-bw/2,top,bw,bh,9),{fill:SK.bus.body,lw:3.2,seed:61,shade:3,pool:4,rim:3.5});
+  X.fillStyle=SK.bus.band;X.fillRect(-bw/2+3,-17,bw-6,5.5);                                    // 아래 띠
+  X.fillStyle='rgba(255,255,255,.32)';X.fillRect(-bw/2+8,top+3.5,bw-26,2);                     // 지붕 빛
+  B.art(B.rrd(bw/2-14,top+6,9.5,18,2.5),{fill:SK.bus.glass,tex:null,lw:1.8,seed:62,pool:0});   // 앞 유리
+  X.fillStyle=SK.bus.lamp;X.fillRect(bw/2-5.5,-15,3.6,4.6);                                    // 전조등
+  X.restore();
+  wheel(-bw/2+17,-5,7.4);wheel(bw/2-17,-5,7.4);
+  for(let i=0;i<n;i++){const cx=-7*dir+(i-(n-1)/2)*WIN,cy=top+18+Math.sin(t*7+i*1.4)*1.1;
+    B.art(B.rrd(cx-WIN/2+2,top+5.5,WIN-4,23,4),{fill:SK.bus.glass,tex:null,lw:1.6,seed:64+i,pool:0});    // 창문
+    face(i,cx,cy,FACE_R,13);
+    X.save();X.translate(cx,cy);B.outline(FACE_RING,2.4,INK,70+i);X.restore()}
+  X.restore()}
+
+// ---------- 배(J.vehicle==='boat' — 한강버스·유람선). 원점 = 물에 닿는 배 가운데, 오른쪽이 뱃머리 ----------
+// 흰 몸통에 갈 길 색의 띠, 위에 객실. 바퀴·그림자 대신 배 뒤로 물살 두 줄이 갈라져 흘러가고, 물결에 살짝 흔들린다.
+// ride = 얼굴을 객실 창문에 태운다(버스와 같은 방식). 색은 화풍이 SK.boat 로 바꿀 수 있다
+const BOAT={hull:'#ffffff',band:SK.route.fill,cabin:SK.bus.body,glass:SK.bus.glass,foam:'#ffffff',...(SK.boat||{})};
+if(J.vehicle_color)BOAT.cabin=J.vehicle_color;
+function wake(L,t){X.save();X.lineCap='round';
+  for(let k=0;k<2;k++){const f=(t*1.4+k*.5)%1,s=-L+3-f*12,len=24+f*30,sp=3+f*10;
+    for(const side of[-1,1]){X.beginPath();X.moveTo(s,side*2.5-1.5);X.quadraticCurveTo(s-len*.5,side*sp*.45-1.5,s-len,side*sp-1.5);
+      X.globalAlpha=.55*(1-f);X.strokeStyle=INK;X.lineWidth=5;X.stroke();            // 흰 길 바탕 위에서도 보이게 붓펜 테를 먼저
+      X.globalAlpha=.95*(1-f);X.strokeStyle=BOAT.foam;X.lineWidth=2.6;X.stroke()}}
+  X.globalAlpha=.65;X.fillStyle=BOAT.foam;X.beginPath();X.ellipse(0,-.5,L+7,3.4,0,0,7);X.fill();X.restore()}
+const hullPath=L=>`M${-L} -16 L${L-12} -16 Q${L+4} -16 ${L+12} -5 L${L+4} 0 L${-L+4} 0 Q${-L} 0 ${-L} -5 Z`;
+function boatAt(x,y,dir,t,ride){const n=ride?faces.length:0,WIN=27*FS,L=n?n*WIN/2+22:30,ch=n?30*FS:15,cw=n?n*WIN+8:36,top=-15-ch;
+  X.save();X.translate(x,y);X.scale(U*VS,U*VS);X.translate(0,Math.sin(t*3.1)*1.2);X.rotate(Math.sin(t*2.3)*.025);
+  X.save();X.scale(dir,1);
+  wake(L,t);
+  B.art(B.rrd(-cw/2-4,top,cw,ch+2,6),{fill:BOAT.cabin,lw:2.4,seed:92,shade:2,pool:2,rim:2.5});                  // 객실
+  B.art(hullPath(L),{fill:BOAT.hull,lw:2.8,seed:91,shade:2.5,pool:3,rim:3});                                      // 몸통
+  X.fillStyle=BOAT.band;X.fillRect(-L+4,-9.5,2*L+2,4.5);                                                          // 띠
+  if(!n)for(let i=0;i<3;i++)B.art(B.rrd(-cw/2+i*11-.5,top+3.5,8.5,8,1.8),{fill:BOAT.glass,tex:null,lw:1.5,seed:93+i,pool:0});
+  X.restore();
+  for(let i=0;i<n;i++){const cx=-4*dir+(i-(n-1)/2)*WIN,cy=top+ch/2+1+Math.sin(t*7+i*1.4)*1.1;
+    B.art(B.rrd(cx-WIN/2+2,top+3.5,WIN-4,ch-6,4),{fill:BOAT.glass,tex:null,lw:1.6,seed:96+i,pool:0});           // 창문
+    face(i,cx,cy,FACE_R,13);
+    X.save();X.translate(cx,cy);B.outline(FACE_RING,2.4,INK,70+i);X.restore()}
+  X.restore()}
+
+// ---------- 그림 이동 아이콘(J.vehicle_image). 원점 = 바닥(배는 물에 닿는 곳) 가운데. 그림은 오른쪽을 보고 있고 dir 로 뒤집는다 ----------
+// 크기: 태운 얼굴 줄이 그림 너비의 72% 안에 들게(얼굴이 없으면 너비 150). 태운 얼굴은 그림의 객실 높이(위에서 56%)에 한 줄로 앉힌다
+function vimgSize(){const n=RIDE?faces.length:0,row=n?n*2*FACE_R+(n-1)*3:0,w=Math.max(150,row/.72);
+  return{w,h:w*VIMG.naturalHeight/Math.max(1,VIMG.naturalWidth),row}}
+function imageVehicle(x,y,dir,t){const{w,h}=vimgSize(),n=RIDE?faces.length:0,boat=J.vehicle==='boat';
+  X.save();X.translate(x,y);X.scale(U*VS,U*VS);
+  if(boat){X.translate(0,Math.sin(t*3.1)*1.2);X.rotate(Math.sin(t*2.3)*.025)}
+  X.save();X.scale(dir,1);
+  if(boat)wake(w*.42,t);else ground(w*.42);
+  X.drawImage(VIMG,-w/2,-h+3,w,h);
+  X.restore();
+  for(let i=0;i<n;i++){const cx=(i-(n-1)/2)*(2*FACE_R+3),cy=-h+3+h*.56+Math.sin(t*7+i*1.4)*1.1;
+    face(i,cx,cy,FACE_R,13*FS);
+    X.save();X.translate(cx,cy);B.outline(FACE_RING,2.4,INK,70+i);X.restore()}
+  X.restore()}
+
+// ---------- 출발·도착 지점: 종이 점 + 이름표(도착은 강조색). 점과 이름표를 붓펜 선으로 잇는다 ----------
+const DOT=B.ell(0,0,9,9), PULSE=B.ell(0,0,10,10);
+function pin(o,p,isEnd,pulse){
+  if(pulse>0){const s=(10+pulse*28)*U/10;X.save();X.translate(p[0],p[1]);X.scale(s,s);X.globalAlpha=(1-pulse)*.9;
+    B.outline(PULSE,3.2*U/s,SK.route.fill,5);X.restore()}
+  const q=[Math.max(o.x,Math.min(o.x+o.w,p[0])),Math.max(o.y,Math.min(o.y+o.h,p[1]))];       // 이름표에서 점에 가장 가까운 곳
+  if(Math.hypot(q[0]-p[0],q[1]-p[1])>4*U)B.ink(B.seg(p[0],p[1],q[0],q[1],4*U),2.4*U,INK,isEnd?91:90,{taper:.2,wob:.3});
+  X.save();X.translate(p[0],p[1]);X.scale(U,U);
+  B.art(DOT,{fill:isEnd?SK.accent:SK.paper,tex:'paper',lw:3.2,seed:isEnd?12:11,drop:2,pool:0});
+  X.fillStyle=INK;X.beginPath();X.arc(0,0,3,0,7);X.fill();X.restore();
+  B.art(B.rrd(o.x,o.y,o.w,o.h,8*HU),{fill:isEnd?SK.accent:SK.paper,tex:isEnd?'paint':'paper',scale:U,lw:2.8*U,seed:isEnd?14:13,drop:3.5*U,shade:2.2*U,pool:4*U});
+  X.font=NAME_FONT;X.textAlign='center';X.textBaseline='middle';X.fillStyle=INK;
+  if(o.cap){X.fillText(o.name,o.x+o.w/2,o.y+21*HU);X.font=CAP_FONT;X.fillText(o.cap,o.x+o.w/2,o.y+47*HU)}
+  else X.fillText(o.name,o.x+o.w/2,o.y+o.h/2+U)}
+
+// ---------- 들르는 곳(J.stops): 길 위의 점과 꼬리표. 지나가고 나면 강조색으로 바뀐다(지나가기만 하는 곳은 그대로) ----------
+// 이름표에는 화면 이름(label — 상호를 가릴 때 '호텔' 등)이 있으면 그것을, 없으면 지명을 쓴다
+const STOPS=(J.stops||[]).map(s=>({...s,name:s.label||s.name,s:LEN*Math.max(0,Math.min(1,s.at)),cap:s.caption||(s.pass?'지나감':'')}));
+const STOP_FONT=`900 ${17*HU}px ${FONT}`, STOP_CAP=`800 ${15*HU}px ${FONT}`;
+function stopBoxes(taken){
+  // 이동 아이콘이 지나는 길 위에는 꼬리표를 놓지 않는다 — 가까이 붙은 두 곳(신용산 · 삼각지역, 11-24)에서 다음 곳에 선 아이콘이 앞 꼬리표를 가렸다
+  const lane=[];if(STOPS.length)for(let i=0;i<RS.length;i+=3){const q=RS[i],r=16*U;lane.push([q[0]-r,q[1]-r,q[0]+r,q[1]+r])}
+  for(const st of STOPS){st.p=at(st.s);X.font=STOP_FONT;const wn=X.measureText(st.name).width;X.font=STOP_CAP;const wc=st.cap?X.measureText(st.cap).width:0;
+    const w=Math.max(wn,wc)+22*HU,h=(st.cap?56:32)*HU,g=18*U,[sx,sy]=st.p;
+    const hit=(x,y)=>k=>x<k[2]&&x+w>k[0]&&y<k[3]&&y+h>k[1];
+    const fits=([x,y])=>x>=EDGE.l&&y>=EDGE.t&&x+w<=MW-EDGE.r&&y+h<=MH-EDGE.b&&!taken.some(hit(x,y))&&!lane.some(hit(x,y));
+    const cands=[[sx-w/2,sy-g-h],[sx-w/2,sy+g],[sx+g,sy-h/2],[sx-g-w,sy-h/2],[sx-w/2,sy-g*3-h],[sx-w/2,sy+g*3],
+                 [sx+g*3,sy-h/2],[sx-g*3-w,sy-h/2]];      // 위 · 아래 · 오른쪽 · 왼쪽 · 더 위 · 더 아래 · 더 오른쪽 · 더 왼쪽
+    const c=cands.find(fits)||cands[0],x=Math.max(EDGE.l,Math.min(MW-w-EDGE.r,c[0])),y=Math.max(EDGE.t,Math.min(MH-h-EDGE.b,c[1]));
+    st.box={x,y,w,h};taken.push([x,y,x+w,y+h])}}
+function drawStops(s){STOPS.forEach((st,i)=>{const o=st.box,p=st.p,hit=!st.pass&&s>=st.s-2*U,r=st.pass?5:7;
+  const q=[Math.max(o.x,Math.min(o.x+o.w,p[0])),Math.max(o.y,Math.min(o.y+o.h,p[1]))];
+  if(Math.hypot(q[0]-p[0],q[1]-p[1])>4*U)B.ink(B.seg(p[0],p[1],q[0],q[1],4*U),2*U,INK,120+i,{taper:.2,wob:.3});
+  X.save();X.translate(p[0],p[1]);X.scale(U,U);B.art(B.ell(0,0,r,r),{fill:hit?SK.accent:SK.paper,tex:'paper',lw:2.6,seed:130+i,pool:0});X.restore();
+  B.art(B.rrd(o.x,o.y,o.w,o.h,7*HU),{fill:hit?SK.accent:SK.paper,tex:hit?'paint':'paper',scale:U,lw:2.4*U,seed:140+i,drop:3*U,pool:3*U});
+  X.textAlign='center';X.textBaseline='middle';X.fillStyle=INK;X.font=STOP_FONT;X.fillText(st.name,o.x+o.w/2,o.y+(st.cap?18:16.5)*HU);
+  if(st.cap){X.font=STOP_CAP;X.fillText(st.cap,o.x+o.w/2,o.y+40*HU)}})}
+
+// 남은 거리 표시(네비 지도): 종이 꼬리표에 강조색 화살표 칸
+const DIST=J.distance_m||M.total;      // 남은 거리가 세는 거리: 실제 주행거리(확인 카드의 '도로 거리'와 같은 값). 그린 선의 길이(M.total)가 아니다
+// 컷 나눔에서는 이 컷 뒤에 남은 길(J.remain_after_m)까지 더해, 남은 거리가 컷을 넘어 이어서 줄어든다. 목적지 이름도 마지막 도착지(J.goal)다
+const REST=J.remain_after_m||0, GOAL=J.goal||J.to.name;
+function hud(s){const left=DIST*(1-s/LEN)+REST,done=REST<=0&&s>=LEN-0.5,x=HUD.x,y=HUD.y,ic=36*HU;
+  const big=done?'도착':left>=1000?(left/1000).toFixed(1)+'km':Math.max(10,Math.round(left/10)*10)+'m';
+  B.art(B.rrd(x,y,HUD.w,HUD.h,10*HU),{fill:SK.paper,tex:'paper',scale:U,lw:2.8*U,seed:71,drop:3.5*U,shade:2.2*U,pool:4*U});
+  B.art(B.rrd(x+8*HU,y+8*HU,ic,ic,7*HU),{fill:SK.accent,scale:U,lw:2.2*U,seed:72,pool:3*U});
+  const cx=x+8*HU+ic/2,cy=y+8*HU+ic/2;                                                    // 화살표
+  X.fillStyle=INK;X.beginPath();X.moveTo(cx,cy-11*HU);X.lineTo(cx+9*HU,cy+10*HU);X.lineTo(cx,cy+4.5*HU);X.lineTo(cx-9*HU,cy+10*HU);X.closePath();X.fill();
+  X.textAlign='left';X.textBaseline='alphabetic';
+  X.fillStyle=SK.label.station;X.font=`700 ${13*HU}px ${FONT}`;X.fillText(done?GOAL:GOAL+'까지',x+ic+18*HU,y+20*HU);
+  X.fillStyle=INK;X.font=`900 ${24*HU}px ${FONT}`;X.fillText(big,x+ic+18*HU,y+44*HU)}
+
+// 지나온 길: 물감으로 굵게 칠하고 붓펜으로 테두리를 두른다. 붓끝(가는 쪽)이 지금 있는 곳이다
+function trail(s){if(s<1)return;
+  const k=Math.min(RS.length-2,Math.floor(s/STEP)),P=RS.slice(0,k+1);
+  if(s-k*STEP>1e-3)P.push(at(s));
+  if(P.length<2)return;
+  const rt=SK.route,tip=Math.min(.5,13*U/s);
+  if(rt.shadow){X.save();X.translate(2.5*U,3.5*U);B.ink(P,(rt.w+2*rt.edge)*U,rt.shadow,21,{taper:[0,tip],wob:.07,vary:.22});X.restore()}      // 또렷한 그림자(화풍이 줄 때만)
+  B.ink(P,(rt.w+2*rt.edge)*U,rt.casing||INK,21,{taper:[0,tip],wob:.07,vary:.22});
+  B.ink(P,rt.w*U,B.tex(rt.fill,'paint',U),21,{taper:[0,tip],wob:.07,vary:.16})}
+
+// ---------- 타임라인 ----------
+// 컷 나눔(J.flow): 앞 컷에서 이어지면(in) 처음부터 달리는 채로 시작하고, 뒤 컷으로 이어지면(out) 멈추지 않고 끝난다
+const FLOW=J.flow||{};
+const T_IN=FLOW.in?0:Math.min(0.6,DUR*0.1), T_OUT=FLOW.out?0:Math.min(1.0,DUR*0.14);     // 출발 전·도착 후 머무는 시간
+// 정차(들르는 곳의 hold 초): 그 자리까지 서서히 멈춰 서 있다가 다시 서서히 떠난다. 움직이는 시간은 정차를 뺀 나머지를 구간 길이대로 나눈다.
+// 정차가 없으면 예전과 똑같이 한 번에 간다(컷 나눔 · 예전 의뢰의 움직임은 그대로)
+const HOLDS=STOPS.filter(st=>st.hold>0&&!st.pass&&st.s>1&&st.s<LEN-1).sort((x,y)=>x.s-y.s);
+const MOVE=Math.max(.5,DUR-T_IN-T_OUT-HOLDS.reduce((n,h)=>n+h.hold,0));
+const LEGS=HOLDS.length?[...HOLDS.map(h=>h.s),LEN].map((s1,i,all)=>{const s0=i?all[i-1]:0;return{s0,s1,dt:MOVE*(s1-s0)/LEN,hold:i<HOLDS.length?HOLDS[i].hold:0}}):[];
+function shape(x,inF,outF){return inF&&outF?x:inF?x*(2-x):outF?x*x:ease(x)}
+function prog(t){
+  if(!LEGS.length)return shape(clamp01((t-T_IN)/(DUR-T_IN-T_OUT)),FLOW.in,FLOW.out);
+  let e=t-T_IN;if(e<=0)return 0;
+  for(let i=0;i<LEGS.length;i++){const L=LEGS[i];
+    if(e<L.dt)return(L.s0+(L.s1-L.s0)*shape(e/L.dt,i===0&&FLOW.in,i===LEGS.length-1&&FLOW.out))/LEN;
+    e-=L.dt;if(e<L.hold)return L.s1/LEN;e-=L.hold}
+  return 1}
+function holding(t){if(!LEGS.length)return false;let e=t-T_IN;if(e<=0)return false;       // 지금 정차 중인가(걷는 사람이 제자리에 선다)
+  for(const L of LEGS){if(e<L.dt)return false;e-=L.dt;if(e<L.hold)return true;e-=L.hold}return false}
+
+// ---------- 사장교(J.bridge.look==='cable'): 경로의 그 구간에 난간·주탑·케이블을 얹는다 ----------
+// 위에서 본 지도라 주탑을 세우면 점으로만 보인다. 그래서 다리 옆으로 눕혀 그린다(비스듬히 내려다본 모습).
+// 케이블은 한 점에서 퍼지지 않게, 주탑의 높이마다 걸어 서로 나란히 긋는다.
+function bridge(){const bd=J.bridge;if(!bd||bd.look!=='cable')return;
+  const s0=LEN*bd.from,s1=LEN*bd.to,sp=LEN*bd.pylon,span=s1-s0;if(span<40*U)return;
+  const dirAt=s=>{const a=at(s-5*U),b=at(s+5*U),l=Math.hypot(b[0]-a[0],b[1]-a[1])||1;return[(b[0]-a[0])/l,(b[1]-a[1])/l]};
+  const P=at(sp),d=dirAt(sp);let n=[-d[1],d[0]];
+  if(P[0]+n[0]*100*U>PW-EDGE.r-40*U||(P[0]>PW/2&&n[0]>0))n=[-n[0],-n[1]];                 // 화면에 자리가 넓은 쪽으로 눕힌다
+  const H=Math.max(80*U,Math.min(230*U,span*.3)),T=[P[0]+n[0]*H-d[0]*H*.22,P[1]+n[1]*H-d[1]*H*.22];      // 주탑 끝(뒤로 조금 기울어 있다)
+  const side=(SK.route.w/2+SK.route.edge+4.5)*U;
+  X.save();X.lineCap='round';X.lineJoin='round';
+  for(const k of [-1,1]){X.beginPath();                                                    // 난간: 다리 양옆의 가는 선
+    for(let s=s0;s<=s1;s+=6*U){const p=at(s),q=dirAt(s);X.lineTo(p[0]-q[1]*side*k,p[1]+q[0]*side*k)}
+    X.strokeStyle=SK.paper;X.lineWidth=4.2*U;X.stroke();X.strokeStyle=INK;X.lineWidth=1.8*U;X.stroke()}
+  const cable=(m,a)=>{X.beginPath();X.moveTo(m[0],m[1]);X.lineTo(a[0],a[1]);X.strokeStyle=SK.paper;X.lineWidth=3.4*U;X.stroke();X.strokeStyle=INK;X.lineWidth=1.3*U;X.stroke()};
+  const fan=(count,reach,sign)=>{for(let k=1;k<=count;k++){const f=k/count,s=sp+sign*reach*f;if(s<s0||s>s1)continue;
+    cable([P[0]+(T[0]-P[0])*(.18+.8*f),P[1]+(T[1]-P[1])*(.18+.8*f)],at(s))}};
+  fan(9,span*.34,1);fan(6,span*.2,-1);                                                     // 긴 쪽(주 경간)과 짧은 쪽
+  X.restore();
+  const m=[T[0]-P[0],T[1]-P[1]],ml=Math.hypot(m[0],m[1])||1,w=[-m[1]/ml,m[0]/ml],b=8*U,t=3.4*U;      // 주탑: 아래가 굵고 위가 가는 기둥
+  B.art(`M${P[0]-w[0]*b} ${P[1]-w[1]*b} L${T[0]-w[0]*t} ${T[1]-w[1]*t} L${T[0]+w[0]*t} ${T[1]+w[1]*t} L${P[0]+w[0]*b} ${P[1]+w[1]*b} Z`,
+    {fill:SK.paper,tex:'paper',scale:U,lw:2.6*U,seed:95,drop:3*U,shade:2*U,pool:0})}
+
+// 카메라의 자리(큰 바탕의 픽셀): 앞뒤 0.4초 동안의 아이콘 자리의 가운데 — 흔들리지 않고 부드럽게 따라가며, 진행 방향을 조금 앞서 본다.
+// 바탕 밖이 보이지 않게 가장자리에서는 멈춘다
+function camAt(t){let x=0,y=0,n=0;
+  for(let k=-6;k<=6;k++){const q=at(prog(Math.max(0,Math.min(DUR,t+k*.07+.12)))*LEN);x+=q[0];y+=q[1];n++}
+  return[Math.max(PW/2,Math.min(MW-PW/2,x/n)),Math.max(PH/2,Math.min(MH-PH/2,y/n))]}
+function content(t){const s=prog(t)*LEN,p=at(s);
+  if(!lab)setup();
+  B.boil=0;
+  const cam=CAM?camAt(t):null;
+  if(cam){X.save();X.translate(PW/2-cam[0],PH/2-cam[1])}
+  X.drawImage(base,0,0);
+  trail(s);
+  X.drawImage(lab,0,0);
+  const arrive=T_OUT>0?clamp01((t-(DUR-T_OUT))/T_OUT):0;
+  bridge();
+  pin(SB,A,false,0);pin(EB,Z,true,s>=LEN-0.5?(arrive*2)%1:0);
+  drawStops(s);
+  const a=at(s-24*U),c=at(s+24*U);
+  const dir=Math.abs(c[0]-a[0])>3*U?Math.sign(c[0]-a[0]):(Z[0]>=A[0]?1:-1);
+  B.boil=Math.floor(t*6);                 // 이동 아이콘의 붓펜 선만 1초에 6번 새로 긋는 것처럼 살짝 떨린다
+  if(J.vehicle==='walk')walker(p[0],p[1],t,t>T_IN&&t<DUR-T_OUT&&!holding(t));
+  else if(VIMG&&VIMG.naturalWidth&&J.vehicle!=='dot'){imageVehicle(p[0],p[1]+(J.vehicle==='boat'?6:12)*U*VS,dir,t);if(!RIDE)drawFaces(p[0],p[1]-(vimgSize().h-4)*U*VS,t)}
+  else if(J.vehicle==='boat'){boatAt(p[0],p[1]+6*U*VS,dir,t,RIDE);if(!RIDE)drawFaces(p[0],p[1]-36*U*VS,t)}
+  else if(RIDE)busRide(p[0],p[1]+14*U,dir,t);
+  else{vehicle(p[0],p[1]+12*U,dir);drawFaces(p[0],p[1]-30*U,t)}
+  B.boil=0;
+  if(cam)X.restore();
+  if(NAV)hud(s);
+  KF.finish(X);
+  // 화면에 얹는 것: 카메라가 따라갈 때는 도착 지점을 화면 자리로 옮겨 준다(화면 밖이면 없음)
+  const Zs=cam?[Z[0]-cam[0]+PW/2,Z[1]-cam[1]+PH/2]:Z, Zon=Zs[0]>0&&Zs[0]<PW&&Zs[1]>0&&Zs[1]<PH;
+  if(Brush.STYLE.overlay)Brush.STYLE.overlay({X,B,U,PW,PH,J,M,t,s,LEN,A,Z:Zon?Zs:null,SAFE,HUD:NAV?HUD:null,R:cam?[]:RS});
+  drawCredit(t)}      // 화풍이 줄 때: 지도 위에 얹는 방송 화면 한 겹(제목판·자막 띠 등)
+
+// ---------- 실행: 방송 화면 자리·카드 테두리·재생·내보내기는 무대가 맡는다. 여기서는 얼굴 그림이 다 불러와지기만 기다린다 ----------
+// 검수판 아래에 적는 자동 검사(안전 영역을 쓰는 화풍에서만): 글자가 든 상자가 안전 영역 안에 있는지, 같이 실은 글꼴로 그렸는지
+function audit(){const out=[],pad=6*U+.5;if(!lab)setup();
+  const check=(b,name,tol)=>{if(b[0]<SAFE.l-tol||b[1]<SAFE.t-tol||b[2]>PW-SAFE.r+tol||b[3]>PH-SAFE.b+tol)out.push(`${name}: 안전 영역 밖으로 나갔습니다`)};
+  if(!CAM){check([SB.x,SB.y,SB.x+SB.w,SB.y+SB.h],`출발 이름표(${SB.name})`,.5);check([EB.x,EB.y,EB.x+EB.w,EB.y+EB.h],`도착 이름표(${EB.name})`,.5)}      // 카메라가 따라가면 지도에 붙은 이름표는 화면을 지나간다 — 검사하지 않는다
+  if(NAV)check([HUD.x,HUD.y,HUD.x+HUD.w,HUD.y+HUD.h],'남은 거리 표시',.5);
+  KEEP.forEach((k,i)=>check(k,`지도 위에 얹은 판 ${i+1}`,pad));
+  if(!CAM)STOPS.forEach(st=>check([st.box.x,st.box.y,st.box.x+st.box.w,st.box.y+st.box.h],`들르는 곳(${st.name})`,.5));
+  if(NAV)KEEP.forEach((k,i)=>{if(k[0]+pad<HUD.x+HUD.w&&k[2]-pad>HUD.x&&k[1]+pad<HUD.y+HUD.h&&k[3]-pad>HUD.y)out.push(`지도 위에 얹은 판 ${i+1}: 남은 거리 표시와 겹칩니다`)});
+  if(CREDIT.w)check([CREDIT.x,CREDIT.y,CREDIT.x+CREDIT.w,CREDIT.y+CREDIT.h],'지도 출처',.5);
+  if(J.attribution&&!CREDIT.w)out.push('지도 출처를 화면에 적지 못했습니다');
+  if(SK.fontCheck&&!SK.fontCheck())out.push('같이 실은 글꼴을 불러오지 못해 컴퓨터에 깔린 다른 글꼴로 그렸습니다');
+  return out}
+ST.run(content,Promise.all([...faces,VIMG].filter(Boolean).map(im=>im.decode().catch(()=>0))),SK.safe?audit:undefined);
+</script>
+</body>
+</html>

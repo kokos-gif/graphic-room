@@ -1,0 +1,757 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>장면 시안</title>
+<!--
+  맞춤 그래픽 장면(mapcg/scene.py) — 서브 에이전트가 쓴 장면 설계(JOB.scene)를 순위판과 같은 화풍 부품으로 그린다.
+  모델은 배치 이름 · 묶음 · 순서 · 강조만 정하고, 자리(좌표)는 이 코드가 안전 영역 안에서 정한다. 모델이 만든 코드는 실행하지 않는다.
+    rows 줄 목록 · receipt 영수증 · grid 칸 격자 · bars 막대 · lanes 시간표 · columns 나란히 · ring 둘러앉기 · chat 대화 · banner 하단 띠
+    headline 큰 글자 판(아이캐치 · 카운트다운 · 오프닝 제목) · wipe 덮는 전환(비스듬한 평행 띠가 덮었다 빠짐, 바탕 투명)
+  움직임(scene.motion): 들어오기(fade · pop · slide_up · slide_left) · 나가기(fade · slide_down · slide_left) · 순서(together · one_by_one · swap 큰 글자 판에서 차례로 바뀜) 만 모델이 고르고,
+  때와 곡선은 이 코드가 박자로 정한다. scene.over_video 면 바탕 없이(투명) 그려 방송 화면 위에 얹는다.
+  자동 검사(ISSUES)는 검수판 아래에 적고, 내보낼 때는 /plan 으로도 보내 파이썬이 읽게 한다.
+  쓰지 않는 것: 한 점에서 뻗는 줄무늬 · 찢은 종이 · 테이프 · 망점 · 기울인 글자(화풍 파일의 금지와 같다).
+    (카운트다운 숫자는 찍히는 0.1초 동안만 기울어 들어오고, 자리 잡은 글자는 언제나 바로 선다.)
+-->
+<style>
+  html,body{margin:0;height:100%;background:#15171b;overflow:hidden}
+  body.bare{background:transparent}
+  #c{position:absolute;left:0;top:0;transform-origin:0 0}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="stage.js"></script>
+<script src="job.js"></script>
+<script src="brush.js"></script>
+<script src="boardskin.js"></script>
+<script>
+"use strict";
+const J = window.JOB, SK = window.BOARDSKIN, S = J.scene || {};
+const ST = Stage(J, SK), { X, PW, PH, U, SAFE } = ST;
+const B = Brush(X, SK);
+const TEAM = Object.assign({ blue: '#3a78d8', red: '#e8503a', yellow: '#f7c531', green: '#3fae6a', purple: '#8a5cd8', pink: '#e86aa0', orange: '#f08a3a', aqua: '#2fb3c0' }, SK.team || {});
+const PAL = ['blue', 'red', 'green', 'yellow', 'purple', 'orange', 'aqua', 'pink'];
+const WHITE = '#ffffff', INK = SK.ink, PAPER = SK.paper, YEL = SK.yel;
+const EXPORT = new URLSearchParams(location.search).get('export') === '1';
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+// 항목 그림(Liner 그림 모델이 그린 작은 그림 — 파이썬이 JOB.pics 에 {항목 id: data URL} 로 넣어 준다). 다 불러온 뒤에 그리기 시작한다
+const PIC = new Map();
+const PICS_READY = Promise.all(Object.entries(J.pics || {}).map(([id, src]) => new Promise(done => {
+  const im = new Image(); im.onload = () => { PIC.set(id, im); done(); }; im.onerror = () => done(); im.src = src;
+})));
+
+Promise.all([ST.ready, PICS_READY]).then(() => {
+// 모든 자리는 540 눈금(가로 960 · 세로 540)으로 잡고, 그릴 때 U 배로 키운다
+const W = PW / U, H = PH / U, MIN = SK.minText || 18;
+const L = SAFE.l / U + 8, R = W - SAFE.r / U - 8, T = SAFE.t / U + 4, BOT = H - SAFE.b / U - 4;
+const ISSUES = [], OPS = [];
+// 움직임: 그리는 일(OPS)마다 박자(BEAT)를 붙인다 — 제목 0, 항목은 차례로 1 · 2 …, 화살표 · 표시는 그 뒤. 박자마다 들어오는 때는 아래 appear 가 정한다
+let BEAT = 0, MAXPX = 0;
+const nextBeat = () => ++BEAT;
+OPS.push = (...fs) => Array.prototype.push.apply(OPS, fs.map(f => ({ f, b: BEAT })));
+const groups = S.groups || [], items = S.items || [], links = S.links || [], marks = S.marks || [];
+const GI = new Map(groups.map((g, i) => [g.id, i])), RECT = new Map();
+const colorOf = name => name === 'ink' ? INK : TEAM[name] || null;
+const gcol = id => { const i = GI.get(id); return i == null ? null : colorOf(groups[i].color) || TEAM[PAL[i % PAL.length]]; };
+const gname = id => { const i = GI.get(id); return i == null ? '' : groups[i].name; };
+const icol = (it, k) => gcol(it.group) || TEAM[PAL[k % PAL.length]];
+const lum = hex => { const n = parseInt(String(hex).slice(1), 16); return (0.2126 * (n >> 16 & 255) + 0.7152 * (n >> 8 & 255) + 0.0722 * (n & 255)) / 255; };
+const onColor = hex => lum(hex) > 0.5 ? INK : WHITE;
+// 바탕 위에 바로 놓는 글자 · 빈 칸 점선 · 화살표의 색. 화풍이 onBg 로 정하지 않으면 바탕이 어두운 화풍(V1 남색 · V2 청록)에서는 흰색,
+// 밝은 바탕(V5 크림 · V4 노랑)에서는 먹색 그대로 — 종이 판 · 이름표 위의 글자는 바탕과 상관없이 먹색이다
+const ON_BG = SK.onBg || (lum(SK.bg) < 0.45 ? WHITE : INK);
+
+// ---------- 글자: 재고 줄이고, 줄이 넘치면 자동 검사에 적는다 ----------
+const width = (s, px) => { X.font = `900 ${px}px ${SK.font}`; return X.measureText(String(s)).width; };
+function judgeSize(s, px, want, where) {
+  const cut = 1 - px / want;
+  if (cut > 0.25) ISSUES.push(`글자를 ${Math.round(cut * 100)}% 줄여야 들어감(${where}): ${s}`);
+  if (px < MIN - 0.01) ISSUES.push(`글자가 작음(${Math.round(px)} · 기준 ${MIN} 이상, ${where}): ${s}`);
+}
+function fit(s, px, room, where, base) {    // 한 줄. base = '줄였다'고 볼 기준 크기(없으면 px)
+  s = String(s); let p = px; while (p > 8 && width(s, p) > room) p -= 0.5;
+  judgeSize(s, p, base || px, where); MAXPX = Math.max(MAXPX, p);
+  return { s, px: p, w: width(s, p) };
+}
+function lines(s, p, room) {                // 띄어쓰기에서 나누고, 낱말 하나가 넘치면 글자 단위로 자른다
+  const out = []; let cur = '';
+  for (const w of String(s).split(/\s+/).filter(Boolean)) {
+    const t = cur ? cur + ' ' + w : w;
+    if (width(t, p) <= room) { cur = t; continue; }
+    if (cur) out.push(cur);
+    if (width(w, p) <= room) { cur = w; continue; }
+    let piece = '';
+    for (const ch of w) { if (piece && width(piece + ch, p) > room) { out.push(piece); piece = ch; } else piece += ch; }
+    cur = piece;
+  }
+  if (cur) out.push(cur);
+  return out.length ? out : [''];
+}
+function wrap(s, px, room, maxLines, where) {   // 여러 줄: 줄 수 안에 들어갈 때까지 줄인다
+  s = String(s); let p = px, ls = lines(s, p, room);
+  while (ls.length > maxLines && p > 8) { p -= 0.5; ls = lines(s, p, room); }
+  if (ls.length > maxLines) { ISSUES.push(`글이 길어 ${maxLines}줄에 다 못 들어감(${where}): ${s}`); ls = ls.slice(0, maxLines); }
+  judgeSize(s, p, px, where); MAXPX = Math.max(MAXPX, p);
+  return { lines: ls, px: p, w: Math.max(...ls.map(l => width(l, p))), h: p + (ls.length - 1) * p * 1.22 };
+}
+const txt1 = (f, x, y, o = {}) => B.text(f.s, x, y, f.px, { align: o.align || 'left', color: o.color || INK });
+function txtN(f, x, cy, o = {}) {           // 여러 줄 글을 cy 가운데에
+  const y0 = cy - f.h / 2 + f.px * 0.86;
+  f.lines.forEach((l, i) => B.text(l, x, y0 + i * f.px * 1.22, f.px, { align: o.align || 'left', color: o.color || INK }));
+}
+
+// ---------- 그리기 재료 ----------
+function card(x, y, w, h, o = {}) {        // 종이 판. fill 없으면 빈 칸(점선)
+  const r = o.r ?? Math.min(12, h / 2), seed = o.seed || 7;
+  if (!o.fill) {
+    X.save(); X.setLineDash([7, 6]); X.lineWidth = 2.4; X.strokeStyle = ON_BG; X.globalAlpha *= 0.6;
+    X.beginPath(); X.roundRect(x, y, w, h, r); X.stroke(); X.restore(); return;
+  }
+  const d = B.rrd(x, y, w, h, r);
+  B.art(d, { fill: o.fill, tex: o.fill === PAPER || o.fill === WHITE ? 'paper' : 'paint', scale: 1, lw: o.lw ?? 2.6, seed, drop: o.flat ? 0 : 3.5, shade: o.flat ? 0 : 2.2, pool: o.flat ? 0 : 4 });
+  if (o.rim) B.outline(d, 4.6, o.rim, seed + 500);
+}
+function chip(f, x, y, h, fill, seed) {    // 이름표: 둥근 판 하나에 글자 한 겹
+  const w = f.w + h * 0.9, d = B.rrd(x, y, w, h, h / 2);
+  B.art(d, { fill, tex: 'paint', scale: 1, lw: 2.4, seed, drop: 2.5, pool: 2 });
+  txt1(f, x + w / 2, y + h / 2 + f.px * 0.36, { align: 'center', color: onColor(fill) });
+  return w;
+}
+const ICONS = SK.icons || null;
+const iconOK = code => !!(ICONS && /^[AB](0[1-9]|1[0-5])$/.test(code || ''));
+function icon(code, cx, cy, size) {
+  if (!iconOK(code)) return; const im = ICONS[code[0]]; if (!im || !im.naturalWidth) return;
+  const n = +code.slice(1) - 1;
+  X.drawImage(im, (n % 5) * ICONS.cell + ICONS.inset, Math.floor(n / 5) * ICONS.cell + ICONS.inset, ICONS.crop, ICONS.crop, cx - size / 2, cy - size / 2, size, size);
+}
+// 항목 옆 그림: 아이콘 코드가 있으면 그 아이콘, 없으면 항목 그림(있을 때). 자리를 줄지는 배치가 정한다
+function iconOf(it, cx, cy, size) {
+  if (iconOK(it.icon)) return icon(it.icon, cx, cy, size);
+  const im = PIC.get(it.id); if (im && im.naturalWidth) X.drawImage(im, cx - size / 2, cy - size / 2, size, size);
+}
+function badge(label, cx, cy, seed, left = false) {     // 도장 · 배지: 붉은 판에 흰 글자(기울이지 않는다). left 면 cx 가 왼쪽 끝
+  const f = fit(label, 21, 220, '표시'), h = f.px + 14, w = f.w + 26;
+  const x = clamp(left ? cx : cx - w / 2, L, R - w), y = clamp(cy - h / 2, T, BOT - h);
+  B.art(B.rrd(x, y, w, h, h / 2), { fill: TEAM.red, tex: 'paint', scale: 1, lw: 2.4, seed, drop: 2.5, pool: 2 });
+  txt1(f, x + w / 2, y + h / 2 + f.px * 0.36, { align: 'center', color: WHITE });
+}
+function arrow(x0, y0, x1, y1, o = {}) {   // 붓선 화살표. bend 만큼 휘고, both 면 양쪽 머리
+  const col = o.color || ON_BG, bend = o.bend || 0, mx = (x0 + x1) / 2, my = (y0 + y1) / 2, len = Math.hypot(x1 - x0, y1 - y0) || 1;
+  const nx = -(y1 - y0) / len, ny = (x1 - x0) / len, qx = mx + nx * bend, qy = my + ny * bend, pts = [];
+  for (let i = 0; i <= 40; i++) { const u = i / 40; pts.push([(1 - u) * (1 - u) * x0 + 2 * u * (1 - u) * qx + u * u * x1, (1 - u) * (1 - u) * y0 + 2 * u * (1 - u) * qy + u * u * y1]); }
+  const seed = o.seed || 11, lw = o.lw || 4.4;      // lw = 선 굵기(칸 사이를 길게 가로지르는 화살표는 굵게)
+  if (o.dashed) for (let k = 0; k < 10; k += 2) B.ink(pts, lw, col, seed + k, { from: k / 10, to: (k + 1) / 10, taper: .1 });
+  else B.ink(pts, lw, col, seed, { taper: [.04, .02] });
+  const head = (a, b, s) => {
+    const ang = Math.atan2(a[1] - b[1], a[0] - b[0]), k = 15 * Math.max(1, lw / 4.4 * 0.8);
+    const d = `M${a[0]} ${a[1]} L${a[0] - k * Math.cos(ang - .45)} ${a[1] - k * Math.sin(ang - .45)} L${a[0] - k * Math.cos(ang + .45)} ${a[1] - k * Math.sin(ang + .45)}Z`;
+    B.art(d, { fill: col, tex: 'paint', scale: 1, lw: 1.8, seed: s, pool: 0 });
+  };
+  head(pts[40], pts[36], seed + 3);
+  if (o.both) head(pts[0], pts[4], seed + 5);
+  const u = o.at ?? 0.5;         // 이름표 자리: 휜 선 위의 u 지점(서로 가리키는 짝은 각자 출발 쪽에 두어 겹치지 않게)
+  return [(1 - u) * (1 - u) * x0 + 2 * u * (1 - u) * qx + u * u * x1, (1 - u) * (1 - u) * y0 + 2 * u * (1 - u) * qy + u * u * y1];
+}
+function linkLabel(label, x, y, col, seed, where) {
+  if (!label) return null;
+  const f = fit(label, 21, 170, where), h = f.px + 12, w = f.w + 22;
+  return () => { const xx = clamp(x - w / 2, L, R - w), yy = clamp(y - h / 2, T, BOT - h);
+    card(xx, yy, w, h, { fill: WHITE, seed, flat: true, rim: col === ON_BG ? null : col, lw: 2 }); txt1(f, xx + w / 2, yy + h / 2 + f.px * 0.36, { align: 'center' }); };
+}
+// 사각형 테두리에서 다른 점을 향하는 자리(화살표가 판 가장자리에서 출발하게)
+function edge(r, tx, ty, pad = 6) {
+  const cx = r.x + r.w / 2, cy = r.y + r.h / 2, dx = tx - cx, dy = ty - cy;
+  const k = Math.min(Math.abs(dx) > 1e-6 ? (r.w / 2 + pad) / Math.abs(dx) : 1e9, Math.abs(dy) > 1e-6 ? (r.h / 2 + pad) / Math.abs(dy) : 1e9);
+  return [cx + dx * k, cy + dy * k];
+}
+// ends(ln, a, b) = 그 화살표의 [시작점, 끝점, 이름표 자리(0~1)]를 배치가 직접 정할 때(나란히의 칸 사이 화살표). 없거나 null 이면 두 판의 가운데를 잇는 선이 테두리와 만나는 자리
+function drawLinks(bendOf, ends) {
+  links.forEach((ln, i) => {
+    if (i) nextBeat();      // 화살표마다 박자를 하나씩 — 차례로 나오기(one_by_one)면 적은 순서대로 하나씩 그려진다(한꺼번에 나오기면 달라지지 않는다)
+    const a = RECT.get(ln.from), b = RECT.get(ln.to);
+    if (!a || !b) { ISSUES.push(`화살표의 끝을 찾지 못함: ${ln.from} → ${ln.to}`); return; }
+    LINKB.push(BEAT);
+    const col = colorOf(ln.color) || ON_BG, bend = bendOf ? bendOf(ln) : 0;
+    const side = ends ? ends(ln, a, b) : null;
+    const p0 = side ? side[0] : edge(a, b.x + b.w / 2, b.y + b.h / 2), p1 = side ? side[1] : edge(b, a.x + a.w / 2, a.y + a.h / 2);
+    const twin = links.some(o => o !== ln && o.from === ln.to && o.to === ln.from);
+    let mid = null;
+    OPS.push(() => { mid = arrow(p0[0], p0[1], p1[0], p1[1], { color: col, dashed: ln.dashed, both: ln.both, bend, seed: 700 + i * 13, at: side ? side[2] : twin ? 0.34 : 0.5, lw: side ? 7.5 : 0 }); });
+    const lab = ln.label ? fit(ln.label, 21, 170, '화살표 이름') : null;
+    if (lab) OPS.push(() => { const d = linkLabel(ln.label, mid[0], mid[1], col, 760 + i); d && d(); });
+  });
+}
+const LINKB = [];      // 그린 화살표마다의 박자(검수판이 화살표가 하나씩 더해지는 순간을 찍을 때 쓴다 — 아래 STEPS)
+const LATE = [], MARKED = new Set();       // 표시(배지)는 카드 · 화살표를 다 그린 뒤에 얹는다(가려지지 않게)
+function markOn(target, x, y, seed, left = false) { marks.filter(m => m.target === target).forEach((m, k) => { MARKED.add(m); LATE.push(() => badge(m.label, x, y + k * 34, seed + k, left)); }); }
+
+// ---------- 제목 · 부제 · 아래 주석 ----------
+let y0 = T, y1 = BOT, TBOX = null;
+if (S.layout !== 'banner' && S.layout !== 'wipe') {
+  if (S.title) {
+    const f = fit(S.title, 36, R - L - 120, '제목'), h = f.px + 26, w = f.w + 52, cx = W / 2, top = T;
+    TBOX = [cx - w / 2, top, cx + w / 2, top + h];
+    OPS.push(() => { const d = B.rrd(cx - w / 2, top, w, h, 12); B.paint(d, { fill: INK, tex: 'paint', scale: 1, drop: 3.5, pool: 0 }); B.outline(d, 2.6, WHITE, 301);
+      txt1(f, cx, top + h / 2 + f.px * 0.36, { align: 'center', color: WHITE }); });
+    y0 = top + h + 10;
+  }
+  if (S.subtitle) { const f = fit(S.subtitle, 22, R - L, '부제'), yy = y0 + f.px; OPS.push(() => txt1(f, W / 2, yy, { align: 'center', color: ON_BG })); y0 = yy + 12; }
+  if (S.note) {
+    const f = fit(S.note, 20, R - L - 40, '주석'), h = f.px + 16, w = f.w + 40, yy = BOT - h;
+    OPS.push(() => { card(W / 2 - w / 2, yy, w, h, { fill: WHITE, seed: 901, r: h / 2, flat: true }); txt1(f, W / 2, yy + h / 2 + f.px * 0.36, { align: 'center' }); });
+    y1 = yy - 10;
+  }
+}
+const BOX = { x0: L, x1: R, y0: y0 + 2, y1 }; BOX.w = BOX.x1 - BOX.x0; BOX.h = BOX.y1 - BOX.y0;
+if (S.layout !== 'banner' && BOX.h < 120) ISSUES.push('제목 · 주석이 커서 본문 자리가 모자람');
+const byGroup = ids => ids.filter(id => items.some(it => it.group === id));
+const orphans = what => { const o = items.filter(it => !GI.has(it.group)); if (o.length) ISSUES.push(`${what}인데 묶음(group)을 정하지 않은 항목: ${o.map(it => it.label || it.text || it.id).join(', ')}`); };
+const cap = (list, n, what) => { if (list.length > n) ISSUES.push(`${what}이 ${list.length}개 — ${n}개까지만 그립니다`); return list.slice(0, n); };
+
+// ---------- 배치마다 자리 잡기 ----------
+function rows() {
+  const list = cap(items, 8, '줄'), N = list.length; if (!N) return ISSUES.push('줄 목록인데 항목이 없음');
+  const pitch = Math.min(96, BOX.h / N), h = pitch - 12, top = BOX.y0 + (BOX.h - N * pitch + 12) / 2, px = Math.min(34, h * 0.45);
+  const hasVal = list.some(it => it.value_text), hasText = list.some(it => it.text);
+  // 묶음(group)이 있는 줄은 맨 앞에 묶음 이름표를 단다(색 띠만으로는 누구 편인지 읽히지 않는다)
+  const gpx = Math.min(22, h * 0.34), gh = gpx + 14, grouped = list.filter(it => GI.has(it.group));
+  const GW = grouped.length ? Math.min(210, Math.max(...grouped.map(it => width(gname(it.group), gpx))) + gh * 0.9) : 0;
+  const valW = hasVal ? Math.min(240, Math.max(...list.map(it => it.value_text ? width(it.value_text, px) : 0)) + 26) : 0;
+  // 아이콘 코드가 있으면 전처럼 자리를 준다. 항목 그림(Liner)만 있을 때는 글 자리가 넉넉할 때만 — 그림은 덤이라, 그림 때문에 글이 작아져 자동 검사에 걸리면 안 된다
+  const iconW = list.some(it => iconOK(it.icon)) || (list.some(it => PIC.has(it.id)) && BOX.w - valW - GW - h * 0.9 >= 380) ? h * 0.9 : 0;
+  const labelW = hasText ? Math.min(Math.max(...list.map(it => width(it.label || '', px))) + 8, (BOX.w - valW - iconW - GW) * 0.4) : BOX.w - valW - iconW - GW - 48;
+  list.forEach((it, i) => { nextBeat();
+    const y = top + i * pitch, cy = y + h / 2, x0 = BOX.x0, x1 = BOX.x1, col = gcol(it.group), x = x0 + 20 + (GW ? GW + 12 : 0) + iconW;
+    const fg = GI.has(it.group) ? fit(gname(it.group), gpx, GW - gh * 0.9, `${i + 1}번 줄 묶음 이름`) : null;
+    const fl = it.label ? fit(it.label, px, labelW, `${i + 1}번 줄 이름`) : null;
+    const tx = x + (fl ? labelW + 18 : 0), troom = x1 - 20 - valW - tx;
+    const ft = it.text ? wrap(it.text, px * 0.74, troom, 2, `${i + 1}번 줄 설명`) : null;
+    const fv = it.value_text ? fit(it.value_text, px, valW - 12, `${i + 1}번 줄 값`) : null;
+    RECT.set(it.id, { x: x0, y, w: x1 - x0, h });
+    OPS.push(() => {
+      card(x0, y, x1 - x0, h, { fill: it.empty ? null : it.emphasis ? YEL : PAPER, seed: 20 + i });
+      if (fg) chip(fg, x0 + 14, cy - gh / 2, gh, col, 30 + i);
+      if (iconW) iconOf(it, x - iconW / 2 - 6, cy, h * 0.84);
+      const tc = it.empty ? ON_BG : INK;        // 빈 줄은 종이 없이 바탕 위
+      if (fl) txt1(fl, x, cy + fl.px * 0.36, { color: tc });
+      if (ft) txtN(ft, tx, cy, { color: tc });
+      if (fv) txt1(fv, x1 - 20, cy + fv.px * 0.36, { align: 'right', color: tc });
+    });
+    markOn(it.id, x1 - 40, y, 820 + i * 5);
+  });
+}
+
+function receipt() {
+  const list = cap(items, 12, '영수증 줄'), body = list.filter(it => !it.emphasis), tot = list.filter(it => it.emphasis);
+  if (!list.length) return ISSUES.push('영수증인데 항목이 없음');
+  const w = Math.min(600, BOX.w), x0 = W / 2 - w / 2, x1 = W / 2 + w / 2, PAD = 26;
+  const units = body.length + tot.length * 1.35 + (tot.length && body.length ? 0.7 : 0);
+  const pitch = Math.min(46, (BOX.h - 2 * PAD) / Math.max(1, units)), px = Math.min(26, pitch * 0.62), tpx = Math.min(32, pitch * 1.35 * 0.6);
+  const hgt = 2 * PAD + units * pitch, top = BOX.y0 + (BOX.h - hgt) / 2;
+  OPS.push(() => card(x0, top, w, hgt, { fill: WHITE, seed: 31, r: 8 }));
+  let y = top + PAD;
+  const line = (it, i, p, big) => { nextBeat();
+    const lab = [it.label, it.text].filter(Boolean).join(' · ');
+    const fv = it.value_text ? fit(it.value_text, p, w * 0.36, `영수증 ${i + 1}번 값`) : null;
+    const fl = fit(lab || ' ', p, w - 2 * PAD - (fv ? fv.w + 30 : 0), `영수증 ${i + 1}번 품목`);
+    const cy = y + (big ? pitch * 1.35 : pitch) / 2, yy = y;
+    RECT.set(it.id, { x: x0, y: yy, w, h: big ? pitch * 1.35 : pitch });
+    OPS.push(() => {
+      if (big && fv) card(x1 - PAD - fv.w - 18, cy - fv.px * 0.72, fv.w + 28, fv.px * 1.44, { fill: YEL, seed: 40 + i, flat: true });
+      txt1(fl, x0 + PAD, cy + fl.px * 0.36);
+      if (fv) {
+        txt1(fv, x1 - PAD, cy + fv.px * 0.36, { align: 'right' });
+        X.save(); X.fillStyle = INK; X.globalAlpha *= .45;      // 품목과 값 사이 점선
+        for (let dx = x0 + PAD + fl.w + 12; dx < x1 - PAD - fv.w - 12; dx += 9) { X.beginPath(); X.arc(dx, cy + 2, 1.4, 0, 7); X.fill(); }
+        X.restore();
+      }
+    });
+    markOn(it.id, x1 - 30, yy, 840 + i * 5);
+    y += big ? pitch * 1.35 : pitch;
+  };
+  body.forEach((it, i) => line(it, i, px, false));
+  if (tot.length && body.length) { const yy = y + pitch * 0.35; OPS.push(() => { B.ink(B.seg(x0 + PAD, yy - 3, x1 - PAD, yy - 3), 2.6, INK, 51); B.ink(B.seg(x0 + PAD, yy + 3, x1 - PAD, yy + 3), 2.6, INK, 52); }); y += pitch * 0.7; }
+  tot.forEach((it, i) => line(it, body.length + i, tpx, true));
+}
+
+function grid() {
+  const cats = items.filter(it => typeof it.value === 'number' && it.value > 0);
+  if (!cats.length) return ISSUES.push('칸 격자인데 칸 수(value)가 있는 항목이 없음');
+  const sum = cats.reduce((a, it) => a + Math.round(it.value), 0);
+  let total = S.grid_total || sum;
+  if (sum > total) { ISSUES.push(`칸 수의 합(${sum})이 전체(${total})보다 많음`); total = sum; }
+  if (total > 400) { ISSUES.push(`칸이 ${total}개 — 400개를 넘으면 칸이 너무 작아 읽히지 않음`); total = 400; }
+  const legendW = Math.min(360, BOX.w * 0.4), gw = BOX.w - legendW - 30, gh = BOX.h;
+  let cols = S.grid_cols || Math.ceil(Math.sqrt(total * gw / gh)); cols = clamp(Math.round(cols), 1, total);
+  const rowsN = Math.ceil(total / cols), cell = Math.min(gw / cols, gh / rowsN), gx = BOX.x0 + (gw - cell * cols) / 2, gy = BOX.y0 + (gh - cell * rowsN) / 2;
+  nextBeat(); const fills = []; cats.forEach((it, k) => { for (let j = 0; j < Math.round(it.value) && fills.length < total; j++) fills.push(icol(it, k)); });
+  OPS.push(() => {
+    for (let i = 0; i < total; i++) {
+      const cx = gx + (i % cols) * cell + cell / 2, cy = gy + Math.floor(i / cols) * cell + cell / 2, r = cell * 0.4, d = B.ell(cx, cy, r, r);
+      if (i < fills.length) B.art(d, { fill: fills[i], tex: 'paint', scale: 1, lw: Math.max(1.2, cell * 0.07), seed: 600 + i, pool: 0 });
+      else { X.save(); X.globalAlpha *= .55; B.art(d, { fill: PAPER, tex: 'paper', scale: 1, lw: Math.max(1, cell * 0.05), seed: 600 + i, pool: 0 }); X.restore(); }
+    }
+  });
+  const lx = BOX.x1 - legendW, per = Math.min(118, BOX.h / cats.length), top = BOX.y0 + (BOX.h - per * cats.length) / 2;
+  cats.forEach((it, k) => { nextBeat();
+    const y = top + k * per, col = icol(it, k), lp = Math.min(28, per * 0.26), vp = Math.min(46, per * 0.4);
+    const fl = fit(it.label || gname(it.group) || ' ', lp, legendW - 56, `범례 ${k + 1}`);
+    const fv = fit(it.value_text || String(it.value), vp, legendW - 56, `범례 ${k + 1} 값`);
+    RECT.set(it.id, { x: lx, y, w: legendW, h: per });
+    OPS.push(() => {
+      B.art(B.ell(lx + 18, y + per * 0.3, 14, 14), { fill: col, tex: 'paint', scale: 1, lw: 2.2, seed: 650 + k, pool: 0 });
+      txt1(fl, lx + 44, y + per * 0.3 + fl.px * 0.36, { color: ON_BG });
+      if (it.emphasis) card(lx + 38, y + per * 0.42, fv.w + 24, fv.px * 1.3, { fill: YEL, seed: 660 + k, flat: true });
+      txt1(fv, lx + 50, y + per * 0.42 + fv.px * 1.02, { color: it.emphasis ? INK : ON_BG });
+    });
+    markOn(it.id, lx + legendW - 40, y + 6, 860 + k * 5);
+  });
+}
+
+function bars() {
+  const list = cap(items, 8, '막대'), N = list.length; if (!N) return ISSUES.push('막대인데 항목이 없음');
+  const vals = list.map(it => typeof it.value === 'number' ? it.value : null);
+  if (!vals.some(v => v != null && v > 0)) ISSUES.push('막대인데 길이를 정할 숫자(value)가 없음');
+  const top = Math.max(1e-9, ...vals.map(v => v || 0)), pitch = Math.min(104, BOX.h / N), h = pitch - 16, px = Math.min(34, h * 0.48);
+  const shows = list.map(it => it.value_text || it.text || (it.value != null ? String(it.value) : ''));
+  const labelW = Math.min(Math.max(...list.map(it => width(it.label || gname(it.group) || '', px))) + 8, BOX.w * 0.3);
+  const valW = Math.min(Math.max(...shows.map(s => width(s, px))) + 34, BOX.w * 0.3);
+  const bx0 = BOX.x0 + labelW + 22, bmax = BOX.x1 - valW - bx0 - 8, y0b = BOX.y0 + (BOX.h - N * pitch + 16) / 2;
+  list.forEach((it, i) => { nextBeat();
+    const y = y0b + i * pitch, cy = y + h / 2, len = Math.max(0, bmax * (vals[i] || 0) / top), col = icol(it, i);
+    const fl = fit(it.label || gname(it.group) || ' ', px, labelW, `${i + 1}번 막대 이름`), fv = shows[i] ? fit(shows[i], px, valW - 20, `${i + 1}번 막대 값`) : null;
+    RECT.set(it.id, { x: bx0, y, w: Math.max(len, 40), h });
+    OPS.push(() => {
+      txt1(fl, bx0 - 14, cy + fl.px * 0.36, { align: 'right', color: ON_BG });
+      if (len >= 6) B.art(B.rrd(bx0, cy - h * 0.34, len, h * 0.68, Math.min(10, len / 2)), { fill: col, tex: 'paint', scale: 1, lw: 2.4, seed: 60 + i, drop: 3, shade: 2, pool: 3 });
+      if (fv) { if (it.emphasis) card(bx0 + len + 8, cy - fv.px * 0.75, fv.w + 22, fv.px * 1.5, { fill: YEL, seed: 80 + i, flat: true }); txt1(fv, bx0 + len + 19, cy + fv.px * 0.36, { color: it.emphasis ? INK : ON_BG }); }
+    });
+    markOn(it.id, bx0 + len + valW, y, 880 + i * 5);
+  });
+}
+
+function parseTime(s) {
+  const m = /(오전|오후|밤|새벽|아침|저녁)?\s*(\d{1,2})\s*(?:시|:)\s*(?:(\d{1,2})\s*분?)?/.exec(s || ''); if (!m) return null;
+  let h = +m[2]; if (/오후|저녁|밤/.test(m[1] || '') && h < 12) h += 12;
+  return h * 60 + (+m[3] || 0);
+}
+function lanes() {
+  orphans('시간표');
+  const laneIds = cap(byGroup(groups.map(g => g.id)), 5, '줄(사람)');
+  const raw = []; items.forEach(it => { const k = it.time || '때 모름'; if (!raw.includes(k)) raw.push(k); });
+  const known = raw.filter(k => k !== '때 모름'), times = (known.every(k => parseTime(k) != null) ? known.slice().sort((a, b) => parseTime(a) - parseTime(b)) : known).concat(raw.includes('때 모름') ? ['때 모름'] : []);
+  const NT = times.length, NL = laneIds.length; if (!NL || !NT) return ISSUES.push('시간표인데 줄(사람)이나 시각이 없음');
+  if (NT > 5) ISSUES.push(`시각이 ${NT}개 — 칸이 좁아 글이 작아질 수 있음`);
+  const HEADW = clamp(Math.max(...laneIds.map(id => width(gname(id), 26))) + 44, 110, 200), HEADH = 46, GAP = 12;
+  const colW = (BOX.w - HEADW - GAP) / NT, laneH = (BOX.h - HEADH - GAP) / NL, gx = BOX.x0 + HEADW + GAP, gy = BOX.y0 + HEADH + GAP;
+  nextBeat();
+  times.forEach((tm, c) => {
+    const x = gx + c * colW, f = fit(tm, 26, colW - 30, '시각'), marked = marks.some(m => m.target === tm), pw = Math.min(colW - 10, f.w + 36);
+    OPS.push(() => {
+      if (marked) { X.save(); X.globalAlpha *= .38; card(x + 2, BOX.y0 - 4, colW - 4, BOX.h + 8, { fill: YEL, seed: 90 + c, flat: true, lw: 0 }); X.restore(); }
+      card(x + colW / 2 - pw / 2, BOX.y0, pw, HEADH, { fill: INK, seed: 100 + c, r: HEADH / 2 });
+      txt1(f, x + colW / 2, BOX.y0 + HEADH / 2 + f.px * 0.36, { align: 'center', color: WHITE });
+    });
+    markOn(tm, x + colW / 2 + pw / 2 + 8, BOX.y0 + HEADH / 2, 900 + c * 5, true);      // 시각 이름표 바로 오른쪽(제목 · 부제를 가리지 않게)
+  });
+  laneIds.forEach((id, r) => { nextBeat();
+    const y = gy + r * laneH, h = Math.min(58, laneH - 14), f = fit(gname(id), 26, HEADW - 30, '줄 이름');
+    OPS.push(() => chip(f, BOX.x0, y + (laneH - 10) / 2 - h / 2, h, gcol(id), 120 + r));
+    markOn(id, BOX.x0 + HEADW - 10, y, 920 + r * 5);
+    times.forEach((tm, c) => {
+      const cell = items.filter(it => it.group === id && (it.time || '때 모름') === tm), k = cell.length; if (!k) return;
+      const ch = (laneH - 10 - (k - 1) * 6) / k;
+      cell.forEach((it, j) => { nextBeat();
+        const x = gx + c * colW + 4, y2 = y + j * (ch + 6), w = colW - 8, lp = Math.min(20, ch * 0.26);      // 칸의 본문(진술 · 일)이 주인공 — 제목은 작게, 본문은 크게
+        const fl = it.label ? fit(it.label, lp, w - 24, '시간표 칸 제목') : null;
+        const room = ch - 16 - (fl ? fl.px * 1.3 : 0), tp = Math.min(27, Math.max(MIN, room / 2.5));
+        const ft = it.text ? wrap(it.text, tp, w - 24, Math.max(1, Math.floor((room + tp * 0.22) / (tp * 1.22))), '시간표 칸') : null;
+        RECT.set(it.id, { x, y: y2, w, h: ch });
+        OPS.push(() => {
+          card(x, y2, w, ch, { fill: it.empty ? null : it.emphasis ? YEL : PAPER, seed: 140 + r * 10 + c * 3 + j, rim: it.emphasis ? INK : null });
+          const blockH = (fl ? fl.px * 1.3 : 0) + (ft ? ft.h : 0); let yy = y2 + ch / 2 - blockH / 2;
+          const tc = it.empty ? ON_BG : INK;
+          if (fl) { txt1(fl, x + 12, yy + fl.px * 0.86, { color: tc }); yy += fl.px * 1.3; }
+          if (ft) txtN(ft, x + 12, yy + ft.h / 2, { color: tc });
+        });
+        markOn(it.id, x + w - 24, y2, 940 + r * 10 + c * 3 + j);
+      });
+    });
+  });
+  nextBeat(); drawLinks(null);
+}
+
+function columns() {
+  orphans('나란히');
+  const colIds = cap(byGroup(groups.map(g => g.id)), 4, '묶음'), NC = colIds.length; if (!NC) return ISSUES.push('나란히인데 묶음이 없음');
+  // 다른 칸의 카드끼리 잇는 화살표(짝 맞추기 · 엇갈린 연결)가 있으면 칸 사이를 넓게 벌리고, 화살표를 마주 보는 옆면 가운데에서 가운데로 긋는다 —
+  // 좁은 틈에서는 엇갈린 화살표가 짧은 토막으로 겹쳐 어느 것이 어디로 가는지 읽히지 않는다(11-23 실측: 구매리스트 의뢰)
+  const colOf = new Map(); colIds.forEach((id, c) => items.forEach(it => { if (it.group === id) colOf.set(it.id, c); }));
+  const across = ln => colOf.has(ln.from) && colOf.has(ln.to) && colOf.get(ln.from) !== colOf.get(ln.to);
+  const gap = links.some(across) ? clamp(BOX.w * 0.52 / NC, 110, 260) : links.length ? 76 : 30, colW = (BOX.w - gap * (NC - 1)) / NC, HEADH = 50;
+  const lists = colIds.map(id => items.filter(it => it.group === id)), most = Math.max(...lists.map(l => l.length));
+  const areaY = BOX.y0 + HEADH + 14, areaH = BOX.y1 - areaY, cardH = Math.min(100, (areaH - (most - 1) * 12) / most);
+  if (most > 6) ISSUES.push(`한 묶음에 항목이 ${most}개 — 판이 작아 글이 작아질 수 있음`);
+  colIds.forEach((id, c) => { nextBeat();
+    const x = BOX.x0 + c * (colW + gap), f = fit(gname(id), 28, colW - 40, '묶음 이름');
+    OPS.push(() => { const w = f.w + HEADH * 0.9; chip(f, x + colW / 2 - w / 2, BOX.y0, HEADH, gcol(id), 160 + c); });
+    markOn(id, x + colW - 30, BOX.y0 - 4, 960 + c * 5);
+    const used = lists[c].length * cardH + (lists[c].length - 1) * 12;
+    lists[c].forEach((it, j) => { nextBeat();
+      const y = areaY + (areaH - most * cardH - (most - 1) * 12) / 2 + j * (cardH + 12);
+      const lp = Math.min(30, cardH * 0.36), hasT = !!it.text;
+      const fv = it.value_text ? fit(it.value_text, lp, colW * 0.35, '나란히 값') : null;
+      // 아이콘 코드가 있으면 전처럼 자리를 준다. 항목 그림(Liner)은 그림을 넣고도 이름이 줄지 않고 들어가고 글 자리가 넉넉할 때만(좁은 칸에서는 그림을 뺀다)
+      const picRoom = colW - 28 - cardH * 0.8 - (fv ? fv.w + 16 : 0);
+      const iconW = iconOK(it.icon) || (PIC.has(it.id) && picRoom >= (hasT ? 180 : 90) && width(it.label || ' ', lp) <= picRoom) ? cardH * 0.8 : 0;
+      const room = colW - 28 - iconW - (fv ? fv.w + 16 : 0);
+      const fl = fit(it.label || (it.empty ? '빈 칸' : ' '), lp, room, '나란히 이름');
+      const ft = hasT ? wrap(it.text, Math.min(21, lp * 0.75), room, cardH > 70 ? 2 : 1, '나란히 설명') : null;
+      RECT.set(it.id, { x, y, w: colW, h: cardH });
+      OPS.push(() => {
+        card(x, y, colW, cardH, { fill: it.empty ? null : it.emphasis ? YEL : PAPER, seed: 180 + c * 10 + j, rim: it.emphasis ? INK : null });
+        if (iconW) iconOf(it, x + 14 + iconW / 2, y + cardH / 2, iconW);
+        const tx = x + 14 + iconW + (iconW ? 8 : 0), blockH = fl.px + (ft ? ft.h + 6 : 0), top = y + cardH / 2 - blockH / 2;
+        X.save(); if (it.empty) X.globalAlpha *= .72;
+        const tc = it.empty ? ON_BG : INK;
+        txt1(fl, tx, top + fl.px * 0.86, { color: tc });
+        if (ft) txtN(ft, tx, top + fl.px + 6 + ft.h / 2, { color: tc });
+        X.restore();
+        if (fv) txt1(fv, x + colW - 14, y + cardH / 2 + fv.px * 0.36, { align: 'right', color: tc });
+      });
+      markOn(it.id, x + colW - 26, y, 980 + c * 10 + j);
+    });
+    void used;
+  });
+  nextBeat(); drawLinks(null, (ln, a, b) => {
+    if (!across(ln)) return null;
+    const right = colOf.get(ln.from) < colOf.get(ln.to);       // 왼쪽 칸에서 오른쪽 칸으로 가는가
+    return [[right ? a.x + a.w + 8 : a.x - 8, a.y + a.h / 2], [right ? b.x - 12 : b.x + b.w + 12, b.y + b.h / 2], 0.16];      // 이름표는 출발 쪽에(엇갈리는 가운데에서 겹치지 않게)
+  });
+}
+
+function ring() {
+  const list = cap(items, 8, '인물 카드'), N = list.length; if (N < 2) return ISSUES.push('둘러앉기인데 카드가 둘보다 적음');
+  const cw = Math.min(190, BOX.w / (N <= 4 ? 4.2 : 5)), ch = Math.min(80, BOX.h / 3.6);
+  const cx = (BOX.x0 + BOX.x1) / 2, cy = (BOX.y0 + BOX.y1) / 2, rx = BOX.w / 2 - cw / 2 - 6, ry = BOX.h / 2 - ch / 2 - 4;
+  const a0 = -Math.PI / 2 + (N % 2 ? 0 : Math.PI / N);      // 짝수면 모서리에서 시작해 가로 화살표가 길게 나오게
+  list.forEach((it, i) => { nextBeat();
+    const a = a0 + i * 2 * Math.PI / N, x = cx + rx * Math.cos(a) - cw / 2, y = cy + ry * Math.sin(a) - ch / 2, col = icol(it, i);
+    const fl = fit(it.label || ' ', Math.min(30, ch * 0.38), cw - 26, '카드 이름'), ft = it.text ? wrap(it.text, Math.min(20, ch * 0.24), cw - 26, 1, '카드 설명') : null;
+    RECT.set(it.id, { x, y, w: cw, h: ch });
+    OPS.push(() => {
+      card(x, y, cw, ch, { fill: it.empty ? null : col, seed: 200 + i, rim: it.emphasis ? YEL : null });
+      const blockH = fl.px + (ft ? ft.h + 6 : 0), top = y + ch / 2 - blockH / 2, c = it.empty ? ON_BG : onColor(col);
+      txt1(fl, x + cw / 2, top + fl.px * 0.86, { align: 'center', color: c });
+      if (ft) txtN(ft, x + cw / 2, top + fl.px + 6 + ft.h / 2, { align: 'center', color: c });
+    });
+    markOn(it.id, x + cw - 20, y, 1000 + i * 5);
+  });
+  // 서로 가리키는 두 화살표는 반대쪽으로 휘게 한다(겹치지 않게)
+  const pair = ln => links.some(o => o !== ln && o.from === ln.to && o.to === ln.from);
+  nextBeat(); drawLinks(ln => pair(ln) ? 46 : 0);
+}
+
+function chat() {
+  const list = cap(items, 7, '말풍선'), N = list.length; if (!N) return ISSUES.push('대화인데 말풍선이 없음');
+  const pitch = Math.min(88, BOX.h / N), h = pitch - 14, px = Math.min(24, h * 0.36), top = BOX.y0 + (BOX.h - N * pitch + 14) / 2;
+  const who = it => gname(it.group) || it.label || '';
+  const NW = Math.min(Math.max(...list.map(it => width(who(it), px))) + 40, 170), tw = list.some(it => it.time) ? 96 : 0;
+  list.forEach((it, i) => { nextBeat();
+    const y = top + i * pitch, cy = y + h / 2, bx = BOX.x0 + NW + 22, bw = BOX.x1 - tw - bx;
+    const fn = who(it) ? fit(who(it), px, NW - 26, '보낸 사람') : null, ft = wrap(it.text || it.label || ' ', px, bw - 34, 2, `${i + 1}번 말풍선`);
+    const fm = it.time ? fit(it.time, 19, tw - 10, '보낸 시각') : null;
+    RECT.set(it.id, { x: bx, y, w: bw, h });
+    OPS.push(() => {
+      if (fn) chip(fn, BOX.x0, cy - Math.min(44, h) / 2, Math.min(44, h), gcol(it.group) || INK, 220 + i);
+      const fill = it.emphasis ? YEL : PAPER;
+      B.art(`M${bx + 2} ${cy - 8} L${bx - 12} ${cy} L${bx + 2} ${cy + 8}Z`, { fill, tex: 'paper', scale: 1, lw: 2.2, seed: 240 + i, pool: 0 });
+      card(bx, y, bw, h, { fill, seed: 250 + i, r: Math.min(18, h / 2), rim: it.emphasis ? INK : null });
+      txtN(ft, bx + 18, cy);
+      if (fm) txt1(fm, BOX.x1, cy + fm.px * 0.36, { align: 'right', color: ON_BG });
+    });
+    markOn(it.id, bx + bw - 30, y, 1040 + i * 5);
+  });
+}
+
+function banner() {
+  const list = cap(items, 2, '하단 띠 줄'); if (!list.length) return ISSUES.push('하단 띠인데 글줄이 없음');
+  const lineH = 54, noteH = S.note ? 30 : 0, h = list.length * lineH + 24 + noteH, yb = BOT - h, x0 = L, x1 = R;
+  OPS.push(() => { card(x0, yb, x1 - x0, h, { fill: PAPER, seed: 260, r: 14 }); B.paint(B.rrd(x0 + 10, yb + 12, 12, h - 24, 6), { fill: INK, tex: 'paint', pool: 0 }); });
+  if (S.title) {
+    const f = fit(S.title, 22, 360, '하단 띠 머리표'), th = f.px + 14, tw = f.w + 30;
+    OPS.push(() => { card(x0 + 24, yb - th + 8, tw, th, { fill: INK, seed: 262, r: 8, flat: true }); txt1(f, x0 + 24 + tw / 2, yb - th + 8 + th / 2 + f.px * 0.36, { align: 'center', color: WHITE }); });
+  }
+  list.forEach((it, i) => { nextBeat();
+    const cy = yb + 12 + i * lineH + lineH / 2;
+    const chips = [];
+    if (it.group && GI.has(it.group)) chips.push([gname(it.group), gcol(it.group)]);
+    if (it.label) chips.push([it.label, INK]);         // 묶음 이름표와 이름(label)을 둘 다 준 줄은 둘 다 단다(하나만 그리면 담당이 준 글이 사라진다)
+    let used = 0; const ch = 40, fs = chips.map(([s, c]) => { const f = fit(s, 22, 220, '하단 띠 이름표'); used += f.w + ch * 0.9 + 12; return [f, c]; });
+    const ft = fit(it.text || ' ', 30, x1 - x0 - 44 - used - 20, `하단 띠 ${i + 1}줄`);
+    RECT.set(it.id, { x: x0, y: cy - lineH / 2, w: x1 - x0, h: lineH });
+    OPS.push(() => {
+      let x = x0 + 36; fs.forEach(([f, c], k) => { x += chip(f, x, cy - ch / 2, ch, c, 270 + i * 3 + k) + 12; });
+      if (it.emphasis && String(it.text || '').trim()) card(x - 6, cy - ft.px * 0.72, ft.w + 16, ft.px * 1.44, { fill: YEL, seed: 280 + i, flat: true });
+      txt1(ft, x + 2, cy + ft.px * 0.36);
+    });
+  });
+  if (S.note) { const f = fit(S.note, 19, x1 - x0 - 60, '하단 띠 주석'); OPS.push(() => txt1(f, x0 + 36, BOT - 14)); }
+}
+
+// 차례로 바꿔 보이기(motion.order = swap): 항목이 같은 자리에서 하나씩 바뀐다 — 카운트다운 5 · 4 · 3 · 2 · 1. 길이를 항목 수로 똑같이 나눈다.
+// 항목마다 색이 다르고(팀 색을 차례로 돌려 쓴다 · 강조는 노랑), 구간마다 '쾅' 찍힌다:
+//   크게 넘쳤다가 자리 잡고(기울어 들어와 바로 선다) → 잠깐 흔들리고 → 뒤에서 원 고리 둘이 퍼지고 · 둘레에 색 조각이 튀고 · 같은 각도의 평행 띠 셋이 뒤를 가로지른다 → 구간 끝에 커지며 사라진다.
+// 고리는 원이고 띠는 서로 평행이다(한 점에서 뻗는 줄무늬는 쓰지 않는다). 조각은 줄지어 서지 않게 자리 · 각도 · 색을 씨앗 난수(B.rng)로 흩는다 — 같은 시각은 언제 그려도 같은 그림이다.
+// 박자(초 — 구간이 0.6초보다 짧으면 같은 비율로 줄인다): 찍힘 0.084 · 자리 잡음 0.14 · 띠 0.21 · 고리 0.37 · 조각 0.43 안에 끝나고, 퇴장은 마지막 0.09.
+//   그래서 구간의 72 ~ 85% 사이에는 효과가 걷히고 글자만 또렷하다 — 검수 그림은 78% 에 찍는다(scene.py 의 SWAP_HOLD 와 같은 값이어야 한다).
+let SWAPS = null;
+const SWAP_COLS = ['pink', 'yellow', 'aqua', 'orange', 'purple', 'blue'], SWAP_BEAT = 0.6;
+function headlineSwap() {
+  const list = cap(items, 6, '차례로 바뀌는 글');
+  if (list.length < 2) ISSUES.push('차례로 바꿔 보이기는 항목이 둘 이상이어야 함');
+  if (!list.length) return;
+  const cx = (BOX.x0 + BOX.x1) / 2, cy = BOX.y0 + BOX.h / 2, over = !!S.over_video, TAU = Math.PI * 2;
+  // 방송 화면 위에 글자만 얹을 때(판 · 머리표가 없을 때)는 더 크게 — 판이나 머리표가 있으면 그 자리를 남긴다
+  const roomy = over && !list.some(it => it.label && it.label !== (it.value_text || it.text || it.label)), want = Math.min(300, BOX.h * (roomy ? 0.62 : 0.5));
+  SWAPS = list.map((it, k) => {
+    // want 는 숫자 한 자(카운트다운)에 맞춘 크기라 낱말은 줄어드는 것이 정상이다 — '줄여야 들어감'은 바뀌지 않는 큰 글자 판의 크기(150)를 기준으로 잰다.
+    // (want 를 기준으로 재면 '1라운드 탈락' 같은 낱말이 늘 43% 줄임으로 걸려, 검수자가 모두 '예'라고 해도 미해결로 남았다 — 2026-11-24)
+    const s = it.value_text || it.text || it.label, f = fit(s, want, BOX.w - 160, '큰 글자', Math.min(want, 150, BOX.h * 0.42));
+    const fk = it.label && it.label !== s ? fit(it.label, 34, BOX.w - 160, '큰 글자 머리표') : null;
+    RECT.set(it.id, { x: cx - f.w / 2, y: cy - f.px * 0.66, w: f.w, h: f.px * 1.32 });
+    return { it, f, fk, cx, cy, col: it.emphasis ? YEL : TEAM[SWAP_COLS[k % SWAP_COLS.length]], col2: TEAM[SWAP_COLS[(k + 2) % SWAP_COLS.length]] };
+  });
+  SWAPS.forEach((w, k) => {
+    const px = w.f.px;
+    w.ph = px * 1.32; w.pw = Math.max(w.ph, ...SWAPS.map(o => o.f.w + o.f.px * 0.9));
+    // 효과가 둘러쌀 상자(가운데에서 잰 반 너비 · 반 높이): 판이 있으면 판, 없으면 글자(테두리 · 입체 그림자까지)
+    w.hw = over ? w.f.w / 2 + px * 0.08 : w.pw / 2; w.hh = over ? px * 0.44 : w.ph / 2;
+    // 색 조각 10 ~ 14개: 상자 둘레를 칸으로 나눠 칸마다 하나씩, 거리 · 크기 · 각도 · 색 · 때를 저마다 다르게 — 글자를 가리지 않고, 가운데를 향해 줄지어 서지 않는다
+    const R = B.rng(4100 + k * 97), nb = 10 + Math.floor(R() * 5), a0 = R() * TAU;
+    const cols = [WHITE, ...SWAP_COLS.map(c => TEAM[c]).filter(c => c !== w.col)];
+    w.bits = Array.from({ length: nb }, (_, i) => {
+      const a = a0 + (i + 0.15 + 0.7 * R()) / nb * TAU, ux = Math.cos(a), uy = Math.sin(a);
+      const edge = Math.min(w.hw / Math.max(1e-3, Math.abs(ux)), w.hh / Math.max(1e-3, Math.abs(uy))), dist = edge + px * (0.1 + 0.3 * R());
+      return { x: clamp(cx + ux * dist, 16, W - 16), y: clamp(cy + uy * dist, 16, H - 16), size: Math.max(11, px * (0.065 + 0.065 * R())), round: R() < 0.5,
+        rot: R() * Math.PI, spin: (R() - 0.5) * 2.2, vx: (R() - 0.5) * 0.6 * px, vy: -(0.15 + 0.3 * R()) * px, col: cols[Math.floor(R() * cols.length)], at: R() * 0.06, life: 0.2 + R() * 0.09 };
+    });
+  });
+}
+// 큰 글자 한 덩어리: 오른쪽 아래로 밀린 먹 입체 그림자(조금씩 밀어 여러 번 겹쳐 한 덩어리로) → 굵은 먹 바깥 테 → 얇은 흰 안테(inner) → 색 면. 어떤 촬영본 위에서도 읽힌다.
+// 항목마다 한 번만 구워 두고 덩어리째 키우고 흐린다 — 커지며 사라질 때 겹친 테 · 그림자가 비쳐 색이 탁해지지 않게. 자리 잡은 때는 화소 그대로(1:1) 놓여 또렷하다
+function swapSprite(w, face, inner) {
+  const f = w.f, px = f.px, e = B.mk(Math.ceil((f.w + px * 0.36) * U), Math.ceil(px * 1.5 * U)), g = e.getContext('2d'), sw = e.width / U, sh = e.height / U;
+  const x = sw / 2, y = sh / 2 + px * 0.36, eIn = inner ? px * 0.02 : 0, eOut = px * 0.05, dep = px * 0.055, n = Math.max(4, Math.ceil(dep / 1.5));
+  g.scale(U, U); g.font = `900 ${px}px ${SK.font}`; g.textAlign = 'center'; g.textBaseline = 'alphabetic'; g.lineJoin = 'round';
+  g.fillStyle = g.strokeStyle = INK; g.lineWidth = (eIn + eOut) * 2;
+  for (let i = n; i >= 0; i--) { const d = dep * i / n; g.strokeText(f.s, x + d, y + d); g.fillText(f.s, x + d, y + d); }
+  if (eIn) { g.strokeStyle = WHITE; g.lineWidth = eIn * 2; g.strokeText(f.s, x, y); }
+  g.fillStyle = face; g.fillText(f.s, x, y);
+  g.globalAlpha = 0.45; g.fillStyle = B.tex(face, 'paint', 1); g.fillText(f.s, x, y);       // 물감 결은 옅게만 얹는다(색이 탁해지지 않게)
+  const lit = g.createLinearGradient(0, y - px * 0.74, 0, y - px * 0.28); lit.addColorStop(0, 'rgba(255,255,255,.5)'); lit.addColorStop(1, 'rgba(255,255,255,0)');
+  g.globalAlpha = 0.6; g.fillStyle = lit; g.fillText(f.s, x, y);                            // 글자 위쪽에만 밝은 기운
+  return { e, w: sw, h: sh, x: Math.round((w.cx - sw / 2) * U) / U, y: Math.round((w.cy - sh / 2) * U) / U };
+}
+function drawSwap(t) {
+  if (!SWAPS) return;
+  const n = SWAPS.length, seg = DUR / n, k = clamp(Math.floor(t / seg + 1e-6), 0, n - 1), u = Math.max(0, t - k * seg), w = SWAPS[k], f = w.f, px = f.px;
+  const q = Math.min(1, seg / SWAP_BEAT), HIT = 0.084 * q, IN = 0.14 * q, OUT = 0.09 * q, last = k === n - 1, dir = k % 2 ? 1 : -1;
+  const pout = last && MOT.out === 'none' ? 0 : clamp((u - (seg - OUT)) / OUT, 0, 1);
+  const yb = w.cy - w.ph / 2;
+  // ① 평행 속도 띠: 같은 각도(-18°)의 띠 셋이 뒤를 한 방향으로 가로지른다(머리가 먼저 달리고 꼬리가 따라붙는다). 숫자마다 방향만 번갈고 각도는 같다
+  X.save(); X.translate(w.cx, w.cy); X.rotate(-18 * Math.PI / 180); X.scale(dir, 1); X.lineJoin = 'round';
+  const reach = w.hw + px * 1.05;
+  [[-0.8, 0.2, w.col2], [0.1, 0.11, WHITE], [0.82, 0.16, w.col]].forEach(([oy, th, col], i) => {
+    const u0 = u - i * 0.015 * q, head = easeOut(clamp(u0 / (0.1 * q), 0, 1)), tail = Math.pow(clamp((u0 - 0.07 * q) / (0.11 * q), 0, 1), 2);
+    const x0 = -reach + 2 * reach * tail, x1 = -reach + 2 * reach * head, h = th * px; if (x1 - x0 < h) return;
+    X.beginPath(); X.roundRect(x0, oy * w.hh - h / 2, x1 - x0, h, h / 2);
+    X.lineWidth = 6.4; X.strokeStyle = INK; X.stroke(); X.fillStyle = B.tex(col, 'paint', 1); X.fill();
+  });
+  X.restore();
+  // ② 충격 고리: 찍히는 순간 뒤에서 원 둘이 퍼지며 가늘어져 사라진다(원이다 — 선이 아니다)
+  const base = Math.max(px * 0.5, Math.min(w.hw, w.hh) * 1.1);
+  [[0, 0.7, 0.9, 0.095, w.col], [0.05, 0.5, 0.75, 0.06, WHITE]].forEach(([d, r0, dr, lw0, col]) => {
+    const p = (u - HIT - d * q) / (0.24 * q); if (p <= 0 || p >= 1) return;
+    const r = base * (r0 + dr * easeOut(p)), lw = px * lw0 * (1 - p * p); if (lw < 0.8) return;
+    X.beginPath(); X.arc(w.cx, w.cy, r, 0, Math.PI * 2);
+    X.lineWidth = lw + Math.min(5.6, lw); X.strokeStyle = INK; X.stroke(); X.lineWidth = lw; X.strokeStyle = col; X.stroke();
+  });
+  // ③ 색 조각: 둘레의 흩어진 자리에서 톡 튀어나와 살짝 떴다 내려앉으며 줄어든다(작은 원 · 둥근 네모, 저마다 제 각도로 돈다)
+  for (const b of w.bits) {
+    const tt = u - HIT - b.at * q, p = tt / (b.life * q); if (p <= 0 || p >= 1) continue;
+    const s = p < 0.3 ? back(p / 0.3) : p > 0.6 ? 1 - Math.pow((p - 0.6) / 0.4, 2) : 1, z = b.size * s; if (z < 1.5) continue;
+    const tq = tt / q, bx = b.x + b.vx * tq, byy = b.y + b.vy * tq + 1.2 * px * tq * tq;
+    const shape = () => { X.beginPath(); if (b.round) X.arc(0, 0, z / 2, 0, Math.PI * 2); else X.roundRect(-z / 2, -z / 2, z, z, z * 0.26); };
+    X.save(); X.lineJoin = 'round'; X.fillStyle = X.strokeStyle = INK; X.lineWidth = 5;
+    X.save(); X.translate(bx + 2.6, byy + 2.6); X.rotate(b.rot + b.spin * p); shape(); X.fill(); X.stroke(); X.restore();
+    X.translate(bx, byy); X.rotate(b.rot + b.spin * p); shape(); X.stroke(); X.fillStyle = b.col; X.fill();
+    X.restore();
+  }
+  // ④ 판(화면을 채우는 장면에서만): 숫자 색 판이 자리를 지키고, 숫자가 바뀔 때마다 색이 바뀌며 한 번 부푼다
+  if (PLATE) {
+    const pa = (k === 0 ? clamp(u / (0.08 * q), 0, 1) : 1) * (last ? 1 - pout * pout : 1), ps = 1 + 0.1 * (1 - easeOut(clamp(u / IN, 0, 1)));
+    if (pa > 0.001) {
+      X.save(); X.globalAlpha *= pa; X.translate(w.cx, w.cy); X.scale(ps, ps); X.translate(-w.cx, -w.cy);
+      const d = B.rrd(w.cx - w.pw / 2, yb, w.pw, w.ph, 22);
+      B.paint(d, { fill: w.col, tex: 'paint', scale: 1, drop: 7, pool: 0 }); B.outline(d, 4.2, INK, 295);
+      B.outline(B.rrd(w.cx - w.pw / 2 + 9, yb + 9, w.pw - 18, w.ph - 18, 15), 2.4, WHITE, 296);
+      X.restore();
+    }
+  }
+  // ⑤ 글자: 2.4배 → 0.94배 → 1배(넘쳤다가 자리 잡는다) · ±9° 기울어 들어와 바로 선다(숫자마다 좌우 번갈아) · 찍힌 뒤 0.12초 흔들림(줄어드는 sin) · 끝에 1.3배로 커지며 사라진다
+  const pin = clamp(u / HIT, 0, 1), a = clamp(0.45 + u / (0.06 * q), 0, 1) * (1 - pout * pout);
+  if (a <= 0.001) return;
+  const sc = (u < HIT ? 2.4 - 1.46 * Math.pow(pin, 1.25) : 0.94 + 0.06 * easeOut(clamp((u - HIT) / (IN - HIT), 0, 1))) * (1 + 0.3 * pout);
+  const sq = (u - HIT) / (0.12 * q), amp = sq >= 0 && sq < 1 ? 6 * (1 - sq) : 0;
+  X.save(); X.globalAlpha *= a;
+  X.translate(w.cx + amp * Math.sin(sq * 17 + k * 1.7 + 0.9), w.cy + amp * Math.cos(sq * 23 + k * 2.3));
+  X.rotate(dir * 9 * Math.PI / 180 * (1 - pin)); X.scale(sc, sc); X.translate(-w.cx, -w.cy);
+  const sp = w.sp || (w.sp = swapSprite(w, PLATE ? WHITE : w.col, !PLATE));        // 방송 화면 위: 바탕판 없이 색 글자. 판 위: 흰 글자
+  X.drawImage(sp.e, sp.x, sp.y, sp.w, sp.h);
+  if (w.fk) { const kh = w.fk.px + 18, kw = w.fk.w + kh * 0.9; chip(w.fk, w.cx - kw / 2, yb - kh - 16, kh, gcol(w.it.group) || TEAM.red, 290); }
+  X.restore();
+}
+
+function headline() {      // 큰 글자 판: 머리표(label) · 큰 글자(value_text 나 text) · 아래 줄. 아이캐치 · 카운트다운 · 점수 · 예고
+  if ((S.motion || {}).order === 'swap') return headlineSwap();
+  const list = cap(items, 2, '큰 글자 줄'); if (!list.length) return ISSUES.push('큰 글자 판인데 글이 없음');
+  const m = list[0], sub = list[1], cx = (BOX.x0 + BOX.x1) / 2;
+  const bigS = m.value_text || m.text || m.label, kick = bigS !== m.label ? m.label : '';
+  const lower = [m.value_text && m.text ? m.text : '', sub ? [sub.label, sub.text || sub.value_text].filter(Boolean).join('  ') : ''].filter(Boolean).join('  ·  ');
+  const fb = fit(bigS, Math.min(150, BOX.h * 0.42), BOX.w - 120, '큰 글자');
+  const fk = kick ? fit(kick, 30, BOX.w - 120, '큰 글자 머리표') : null, fs = lower ? fit(lower, 36, BOX.w - 140, '큰 글자 아래 줄') : null;
+  const ph = fb.px * 1.32, pw = Math.min(BOX.w, fb.w + fb.px * 0.9), kh = fk ? fk.px + 18 : 0, sh = fs ? fs.px + 24 : 0, gap = 16;
+  let y = BOX.y0 + (BOX.h - ((kh ? kh + gap : 0) + ph + (sh ? gap + sh : 0))) / 2;
+  if (fk) { const yy = y; nextBeat(); OPS.push(() => { const w = fk.w + kh * 0.9; chip(fk, cx - w / 2, yy, kh, gcol(m.group) || TEAM.red, 290); }); y += kh + gap; }
+  const yb = y; nextBeat(); RECT.set(m.id, { x: cx - pw / 2, y: yb, w: pw, h: ph });
+  OPS.push(() => {
+    const d = B.rrd(cx - pw / 2, yb, pw, ph, 22);
+    B.paint(d, { fill: m.emphasis ? YEL : INK, tex: 'paint', scale: 1, drop: 6, pool: 0 }); B.outline(d, 3.4, m.emphasis ? INK : WHITE, 295);
+    txt1(fb, cx, yb + ph / 2 + fb.px * 0.36, { align: 'center', color: m.emphasis ? INK : WHITE });
+  });
+  markOn(m.id, cx + pw / 2 - 30, yb, 1100);
+  if (fs) {
+    const yy = yb + ph + gap; nextBeat(); if (sub) RECT.set(sub.id, { x: cx - fs.w / 2, y: yy, w: fs.w, h: sh });
+    OPS.push(() => { const w = fs.w + 48; card(cx - w / 2, yy, w, sh, { fill: sub && sub.emphasis ? YEL : PAPER, seed: 297, r: sh / 2 }); txt1(fs, cx, yy + sh / 2 + fs.px * 0.36, { align: 'center' }); });
+    if (sub) markOn(sub.id, cx + fs.w / 2, yy, 1110);
+  }
+}
+
+let WIPE = null;
+function wipe() {          // 덮는 전환: 비스듬한 평행 띠들이 왼쪽에서 화면을 덮고, 가운데 글이 잠깐 나온 뒤 오른쪽으로 빠진다(한 점에서 뻗지 않는다). 바탕은 투명
+  const cols = groups.length ? groups.map(g => gcol(g.id)) : ['purple', 'pink', 'yellow', 'aqua', 'blue', 'orange'].map(c => TEAM[c]);
+  const it = items[0], s = it ? (it.text || it.label || it.value_text) : '';
+  if (items.length > 1) ISSUES.push('덮는 전환에는 글을 한 줄만 씁니다(첫 항목만 그림)');
+  const f = s ? fit(s, 60, W - 280, '전환 글') : null;
+  if (it) RECT.set(it.id, { x: W / 2 - 200, y: H / 2 - 50, w: 400, h: 100 });
+  WIPE = { cols, f };
+}
+
+const LAYOUTS = { rows, receipt, grid, bars, lanes, columns, ring, chat, banner, headline, wipe };
+if (LAYOUTS[S.layout]) LAYOUTS[S.layout](); else ISSUES.push(`모르는 배치: ${S.layout}`);
+marks.filter(m => !MARKED.has(m)).forEach(m => ISSUES.push(`표시를 붙일 곳을 찾지 못함: ${m.label} → ${m.target}`));
+nextBeat(); OPS.push(...LATE);
+if (SK.fontCheck && !SK.fontCheck()) ISSUES.push('같이 실은 글꼴을 불러오지 못함 — 이 컴퓨터의 다른 글꼴로 그려졌습니다');
+
+// ---------- 한 번만 구워 두는 바탕과 마감(하단 띠는 방송 화면 위에 얹으므로 바탕이 없다) ----------
+// ---------- 움직임: 박자마다 들어오고(in) 끝에 다 같이 나간다(out). 모델은 방식만 고르고 곡선 · 때는 코드가 정한다 ----------
+const DUR = J.duration_seconds, LASTT = ST.LAST, MOT = Object.assign({ in: 'none', out: 'none', order: 'together' }, S.motion || {});
+const MOVES = S.layout !== 'wipe' && (MOT.in !== 'none' || MOT.out !== 'none');
+const easeOut = p => 1 - Math.pow(1 - p, 3), eio = p => p * p * (3 - 2 * p), back = p => { const k = 1.7; return 1 + (k + 1) * Math.pow(p - 1, 3) + k * Math.pow(p - 1, 2); };
+const IN_LEN = 0.45, OUT_LEN = 0.4, OUT_AT = MOT.out !== 'none' ? LASTT - OUT_LEN : Infinity;
+const NBEAT = Math.max(1, ...OPS.map(o => o.b));
+const ENTRY_END = Math.min(DUR * 0.55, OUT_AT - 0.35);
+const GAP = Math.max(0.04, Math.min(0.35, (ENTRY_END - 0.08 - IN_LEN) / NBEAT));
+const startOf = b => MOT.order === 'one_by_one' ? 0.08 + b * GAP : (b === 0 ? 0.08 : 0.08 + Math.min(0.3, GAP));
+if (MOVES && MOT.in !== 'none' && startOf(NBEAT) + IN_LEN > Math.min(LASTT, OUT_AT) + 1e-6) ISSUES.push('길이가 짧아 마지막 항목이 다 들어오기 전에 끝나거나 나갑니다');
+// 검수판: 화살표가 차례로 나오는 장면(one_by_one)은 고정된 네 순간(10 · 30 · 65 · 95%) 대신 화살표가 하나씩 더해지는 순간을 찍는다.
+// 화살표들은 박자 간격(GAP, 많아야 0.35초)으로 잇달아 나와서, 네 순간으로는 '하나도 없음' 다음 장이 '다 나옴'이 된다 — 검수가 차례 등장을
+// 확인하지 못해 맞게 만든 시안이 불합격으로 돌아왔다(11-24 실측: 화살표 4개 · 12초, 모델을 바꿔도 같은 항목에서 걸렸다).
+// 찍는 때 = 다음 화살표가 나오기 직전(그 화살표는 거의 다 들어왔고 다음 것은 아직 안 보인다), 마지막 장은 전부 다 나온 순간.
+// 박자가 너무 촘촘하면(GAP 0.12초 미만 — 직전 순간에도 막 들어온 것이 절반도 안 보인다) 예전처럼 네 순간으로 둔다. 8장까지(더 많으면 고르게 뽑는다).
+// 한도를 0.2초로 두었더니 길이를 안 적은 장면(기본 3초)에 차례가 6개만 돼도(간격 0.187초) 꺼졌다 — 0.12초면 3초에 9개까지 들어간다
+// 화살표가 없거나 하나뿐인 차례 등장(줄 목록 · 일정표의 항목)도 같다 — 박자(제목 뒤 1 · 2 · 3 …)마다 하나씩 더해지는 순간을 찍는다
+// (11-24 실험: 일정 6줄이 '1개 → 5개 → 6개'로만 찍혀 "하나씩 나오는가"가 불합격). kind = 무엇을 세는지('links' 화살표 · 'items' 차례).
+// 나가는 움직임이 있으면 맨 끝에 나가는 순간 한 장을 덧붙인다(그만큼 더해지는 순간은 7장까지 — 여섯 줄 + 딱지 한 박자가 다 들어간다) — 예전 네 순간이
+// 보여 주던 퇴장을 잃지 않게(나가기의 60% 지점 — 95% 시각은 아직 거의 안 사라진 때라 다 나온 장과 구별되지 않았다). 검수자에게는 가로 1280 으로 줄여 보내므로(proof.picture) 장이 늘어도 한 칸의 크기는 같다
+const STEPS = (() => {
+  if (!MOVES || MOT.in === 'none' || MOT.order !== 'one_by_one' || GAP < 0.12) return null;
+  // 차례 = 실제로 그릴 것이 있는 박자만. 화살표가 없어도 배치가 화살표 몫으로 박자를 하나 넘기므로(nextBeat(); drawLinks) 1 ~ NBEAT 를 다 세면
+  // 아무것도 안 나오는 박자가 끼어 같은 그림이 두 장 찍힌다(11-24 정밀 리뷰: 나란히 배치 + 딱지에서 6 · 7번째 장이 같았다)
+  const drawnBeats = [...new Set(OPS.map(o => o.b))].filter(b => b > 0).sort((x, y) => x - y);
+  const kind = LINKB.length >= 2 ? 'links' : 'items', beats = kind === 'links' ? LINKB : drawnBeats;
+  const n = beats.length, leave = MOT.out !== 'none', room = leave ? 7 : 8;
+  if (n < 2) return null;
+  const all = Math.min(LASTT, OUT_AT, startOf(NBEAT) + IN_LEN);
+  const pick = n <= room ? beats.map((_, i) => i) : Array.from({ length: room }, (_, k) => Math.round(k * (n - 1) / (room - 1)));
+  const times = pick.map(i => +(i === n - 1 ? all : Math.min(all, startOf(beats[i + 1]) - 0.01)).toFixed(3));
+  return { kind, times: leave ? [...times, +Math.min(LASTT, OUT_AT + OUT_LEN * 0.6).toFixed(3)] : times, shown: pick.map(i => i + 1), hold: times.length - 1, leave };
+})();
+function appear(b, t) {
+  if (!MOVES) return { alpha: 1, dx: 0, dy: 0 };
+  let alpha = 1, dx = 0, dy = 0;
+  if (MOT.in !== 'none') {
+    const p = clamp((t - startOf(b)) / IN_LEN, 0, 1); if (p <= 0) return { alpha: 0, dx, dy };
+    if (MOT.in === 'fade') alpha = easeOut(p);
+    else if (MOT.in === 'pop') { alpha = Math.min(1, p * 3); dy = (1 - back(p)) * 22; }
+    else if (MOT.in === 'slide_up') { alpha = Math.min(1, p * 2); dy = (1 - easeOut(p)) * 36; }
+    else if (MOT.in === 'slide_left') { alpha = Math.min(1, p * 2); dx = (1 - easeOut(p)) * 80; }
+  }
+  const q = clamp((t - OUT_AT) / OUT_LEN, 0, 1);
+  if (q > 0) { const e = q * q; alpha *= 1 - e; if (MOT.out === 'slide_down') dy += e * 40; if (MOT.out === 'slide_left') dx -= e * 90; }
+  return { alpha, dx, dy };
+}
+function drawWipe(t) {     // 띠마다 조금씩 늦게 들어오고(0 ~ 42%), 다 덮인 채 가운데 글이 머문 뒤(42 ~ 58%), 같은 방향으로 빠진다(58 ~ 100%)
+  if (!WIPE) return;
+  const n = 6, bh = H / n, sl = 150, st = DUR * 0.035, LEN = DUR * 0.25, span = W + 2 * sl + 40;      // 마지막 띠가 42% 에 다 덮고 58% 까지 머문다
+  for (let k = 0; k < n; k++) {
+    const pin = eio(clamp((t - k * st) / LEN, 0, 1)), pout = eio(clamp((t - DUR * 0.58 - k * st) / LEN, 0, 1));
+    const xr = -sl + pin * span, xl = -sl + pout * span; if (xr <= xl + 1) continue;
+    const y0 = k * bh - 2, y1 = (k + 1) * bh + 2, d = `M${xl + sl / 2} ${y0} L${xr + sl / 2} ${y0} L${xr - sl / 2} ${y1} L${xl - sl / 2} ${y1}Z`;
+    B.paint(d, { fill: WIPE.cols[k % WIPE.cols.length], tex: 'paint', scale: 1, pool: 3 }); B.outline(d, 3, INK, 330 + k);
+  }
+  const f = WIPE.f; if (!f) return;
+  const a = clamp((t - DUR * 0.3) / 0.15, 0, 1) * (1 - clamp((t - DUR * 0.62) / 0.12, 0, 1)); if (a <= 0) return;
+  const w = f.w + 70, h = f.px * 1.5;
+  X.save(); X.globalAlpha *= a;
+  const d = B.rrd(W / 2 - w / 2, H / 2 - h / 2, w, h, 18); B.paint(d, { fill: INK, tex: 'paint', scale: 1, drop: 5, pool: 0 }); B.outline(d, 3, WHITE, 340);
+  txt1(f, W / 2, H / 2 + f.px * 0.36, { align: 'center', color: WHITE });
+  X.restore();
+}
+
+// 바탕: 하단 띠 · 덮는 전환 · 방송 화면 위에 얹는 장면(over_video)은 바탕 없이 그린다(투명 — 영상 위에 합성)
+const PLATE = (S.layout === 'banner' || S.layout === 'wipe' || S.over_video) ? null : (() => {
+  const e = B.mk(PW, PH), g = e.getContext('2d');
+  if (typeof SK.backdrop === 'function') SK.backdrop({ g, B, PW, PH, U }); else { g.fillStyle = SK.bg; g.fillRect(0, 0, PW, PH); }
+  return e;
+})();
+const WASH = PLATE ? B.wash(PW, PH, 12, U) : null, GRAIN = PLATE ? B.grain(PW, PH, 3, U) : null;
+
+function content(t) {
+  B.boil = 0;
+  if (PLATE) X.drawImage(PLATE, 0, 0);
+  X.save(); X.scale(U, U);
+  if (S.layout === 'wipe') drawWipe(t);
+  for (const o of OPS) { const a = appear(o.b, t); if (a.alpha <= 0.001) continue; X.save(); X.globalAlpha *= a.alpha; X.translate(a.dx, a.dy); o.f(); X.restore(); }
+  drawSwap(t);
+  X.restore();
+  if (!PLATE) return;
+  if (TBOX && typeof SK.overlay === 'function') SK.overlay({ X, B, U, PW, PH, J, t, TITLE: TBOX.map(v => v * U), show: 1 });
+  X.save(); X.globalCompositeOperation = 'soft-light';
+  if (SK.finish.wash) { X.globalAlpha = SK.finish.wash; X.drawImage(WASH, 0, 0); }
+  if (SK.finish.grain) { X.globalAlpha = SK.finish.grain; X.drawImage(GRAIN, 0, 0); }
+  X.restore();
+}
+
+const AUDIT = () => [...new Set(ISSUES)];
+// 검수판을 찍을 때(times=)만 보낸다 — 영상 저장 때는 무대가 /plan 으로 장수를 알리므로 끼어들면 저장기가 멈춘다(11-21 실측)
+const sent = EXPORT && new URLSearchParams(location.search).get('times') ? fetch('/plan', { method: 'POST', body: JSON.stringify({ issues: AUDIT(), big: +(MAXPX / H).toFixed(3), ...(STEPS ? { times: STEPS.times, steps: STEPS.shown, step_kind: STEPS.kind, hold: STEPS.hold, leave: STEPS.leave } : {}) }) }).catch(() => 0) : null;      // 파이썬이 자동 검사를 글로 받는다
+ST.run(content, sent, AUDIT, STEPS ? () => STEPS.times : null);
+});
+</script>
+</body>
+</html>

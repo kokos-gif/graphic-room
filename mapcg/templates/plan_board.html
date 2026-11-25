@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>정보판 미리보기</title>
+<!--
+  설계도 정보판 — Liner 가 정한 구조(plan.py)를 순위판과 같은 화풍 부품으로 그린다. 그림 생성도, 모델이 만든 코드도 쓰지 않는다.
+    versus  VS 대결판: 줄마다 가운데 VS 배지, 이름은 배지 옆, 막대는 바깥쪽으로 자란다. 이긴 쪽 값은 노란 판에(이긴 쪽은 plan.py 가 숫자로 정해 온다)
+    rules   설명판: 번호 메달 + 제목 + 설명
+  색·글꼴·종이 띠·배경·마감은 디자인 기준 묶음(boardskin.js)과 화풍 파일을 그대로 따른다. 편의 색은 화풍이 주는 team 을 먼저 쓴다.
+  값은 받은 글자 그대로 적는다. 숫자로 바꾼 값은 막대 길이에만 쓴다.
+-->
+<style>
+  html,body{margin:0;height:100%;background:#15171b;overflow:hidden}
+  body.bare{background:transparent}
+  #c{position:absolute;left:0;top:0;transform-origin:0 0}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="stage.js"></script>
+<script src="job.js"></script>
+<script src="brush.js"></script>
+<script src="boardskin.js"></script>
+<script>
+"use strict";
+const J = window.JOB, SK = window.BOARDSKIN;
+const ST = Stage(J, SK), { X, PW, PH, U, SAFE } = ST, DUR = J.duration_seconds;
+const B = Brush(X, SK);
+const clamp01 = v => Math.max(0, Math.min(1, v)), easeOut = t => 1 - Math.pow(1 - clamp01(t), 3);
+const back = t => { t = clamp01(t); const s = 1.7; return 1 + (s + 1) * Math.pow(t - 1, 3) + s * Math.pow(t - 1, 2); };
+const at = (t, start, len = 0.4) => len > 0 ? clamp01((t - start) / len) : +(t >= start);
+const pop = p => p <= 0 ? 0 : p >= 1 ? 1 : back(p);
+// 편의 색: 화풍이 주면 그것을(V5 는 파스텔 계열), 아니면 기본 물감색
+const TEAM = Object.assign({ blue: '#3a78d8', red: '#e8503a', yellow: '#f7c531', green: '#3fae6a', purple: '#8a5cd8', pink: '#e86aa0', orange: '#f08a3a', aqua: '#2fb3c0' }, SK.team || {});
+const WHITE = '#ffffff';
+
+ST.ready.then(() => {
+const ROWS = J.rows, N = ROWS.length, VS = J.shape === 'versus';
+const ISSUES = [];
+const BIG = SK.row || {}, DECO = SK.title || {};
+const UX = U * Math.min(1, PW / (960 * U));
+const MX = Math.max(64 * UX, SAFE.l + 14 * UX, SAFE.r + 14 * UX), HEAD = 128 * U, FOOT = Math.max(26 * U, SAFE.b + 8 * U), TITLE_PX = 46 * U, PAD = 18 * UX;
+const LAB = VS && (J.left_label || J.right_label) ? 40 * U : 0;          // 편 이름 줄
+const PITCH = Math.min((BIG.pitch || 68) * U, (PH - FOOT - HEAD - LAB) / N), SH = PITCH - 10 * U;
+const PX = Math.min((BIG.px || 27) * U, SH * 0.52);
+const TOP = HEAD + LAB + (PH - FOOT - HEAD - LAB - (N * PITCH - 10 * U)) * 0.4;
+const CX = PW / 2, X0 = MX, X1 = PW - MX, STRIPW = X1 - X0;
+const width = (s, px) => { X.font = `900 ${px}px ${SK.font}`; return X.measureText(s).width; };
+const fit = (s, px, room) => { let p = px; while (width(s, p) > room && p > 8) p -= 1; return { px: p, w: width(s, p) }; };
+const shrunk = (s, px, room) => Math.round((1 - Math.min(1, room / Math.max(1, width(s, px)))) * 100);
+const MEDAL = B.ell(0, 0, 20, 20);
+
+// ---------- 자리 잡기 ----------
+let G = {};
+if (VS) {
+  const BR = Math.min(SH * 0.62, (BIG.medal || 26) * U * 1.15);                 // VS 배지 반지름(띠보다 조금 크게)
+  const HALF = CX - BR - 12 * UX - (X0 + PAD);                                   // 배지 옆에서 띠 끝까지 한쪽 폭
+  const names = ROWS.flatMap(r => [r.left.name, r.right.name]), shows = ROWS.flatMap(r => [r.left.value_text, r.right.value_text]);
+  const NAME_W = Math.min(Math.max(...names.map(s => width(s, PX))), HALF * 0.42);
+  const VAL_W = Math.min(Math.max(...shows.map(s => width(s, PX))) + 26 * UX, HALF - NAME_W - 20 * UX);      // 값은 이긴 쪽 노란 판까지 들어갈 폭
+  const BARW = HALF - NAME_W - 14 * UX - VAL_W - 10 * UX;
+  const TOPV = Math.max(0, ...ROWS.flatMap(r => [r.left.value ?? 0, r.right.value ?? 0]));
+  G = { BR, HALF, NAME_W, VAL_W, BARW, TOPV, BARS: TOPV > 0 && BARW >= 40 * U };
+  names.forEach(s => { if (shrunk(s, PX, NAME_W) > 25) ISSUES.push(`이름을 ${shrunk(s, PX, NAME_W)}% 줄여야 들어감: ${s}`); });
+  shows.forEach(s => { if (shrunk(s, PX, VAL_W - 26 * UX) > 25) ISSUES.push(`값을 ${shrunk(s, PX, VAL_W - 26 * UX)}% 줄여야 들어감: ${s}`); });
+  if (TOPV > 0 && !G.BARS) ISSUES.push('이름과 값이 길어 막대를 그릴 자리가 없음 — 막대 없이 글자만 나옵니다');
+} else {
+  const BR = Math.min(SH * 0.5, (BIG.medal || 26) * U);
+  const ROOM = STRIPW - BR * 2 - 14 * UX - 2 * PAD;
+  const HEAD_W = Math.min(Math.max(...ROWS.map(r => width(r.heading, PX))), ROOM * 0.45);
+  G = { BR, ROOM, HEAD_W, BODY_PX: PX * 0.8 };
+  ROWS.forEach(r => { if (r.heading && shrunk(r.heading, PX, HEAD_W) > 25) ISSUES.push(`제목을 ${shrunk(r.heading, PX, HEAD_W)}% 줄여야 들어감: ${r.heading}`);
+    const room = ROOM - (r.heading ? HEAD_W + 20 * UX : 0);
+    if (r.body && shrunk(r.body, G.BODY_PX, room) > 30) ISSUES.push(`설명을 ${shrunk(r.body, G.BODY_PX, room)}% 줄여야 들어감: ${r.body}`); });
+}
+const TFIT = fit(J.title, TITLE_PX, PW - 2 * MX - (DECO.plate ? 56 * U : 0) - ((J.icon_left || J.icon_right) ? 140 * U : 0));
+const TPLATE = DECO.plate ? { w: TFIT.w + 56 * U, h: TFIT.px + 28 * U, cy: Math.max(26 * U, SAFE.t + 6 * U) + (TFIT.px + 28 * U) / 2 } : null;
+const TBOX = TPLATE ? [CX - TPLATE.w / 2, TPLATE.cy - TPLATE.h / 2, CX + TPLATE.w / 2, TPLATE.cy + TPLATE.h / 2] : [CX - TFIT.w / 2, 80 * U - TFIT.px, CX + TFIT.w / 2, 80 * U + 28 * U];
+if (shrunk(J.title, TITLE_PX, PW - 2 * MX) > 25) ISSUES.push(`제목을 ${shrunk(J.title, TITLE_PX, PW - 2 * MX)}% 줄여야 들어감: ${J.title}`);
+if (SK.minText) {
+  const UR = Math.min(PW, PH) / 540;
+  const small = [[J.title, TFIT.px], ...(VS ? ROWS.flatMap(r => [[r.left.name, fit(r.left.name, PX, G.NAME_W).px], [r.right.name, fit(r.right.name, PX, G.NAME_W).px]])
+    : ROWS.filter(r => r.body).map(r => [r.body, fit(r.body, G.BODY_PX, G.ROOM - (r.heading ? G.HEAD_W + 20 * UX : 0)).px]))].filter(([, px]) => px < SK.minText * UR - .01);
+  small.forEach(([s, px]) => ISSUES.push(`글자가 작음(${Math.round(px / UR)} · 기준 ${SK.minText} 이상): ${s}`));
+}
+if (SK.safe) {
+  [['제목', TBOX], ['줄', [X0, TOP - LAB, X1, TOP + (N - 1) * PITCH + SH]]].forEach(([name, [x0, y0, x1, y1]]) => {
+    if (x0 < SAFE.l - .5 || y0 < SAFE.t - .5 || x1 > PW - SAFE.r + .5 || y1 > PH - SAFE.b + .5) ISSUES.push(`안전 영역 밖으로 나감: ${name}`); });
+}
+if (SK.fontCheck && !SK.fontCheck()) ISSUES.push('같이 실은 글꼴을 불러오지 못함 — 이 컴퓨터의 다른 글꼴로 그려졌습니다');
+
+// ---------- 시간: 제목 → 위 줄부터 한 줄씩(들어옴 → 막대 → 값 · 이긴 쪽). 영상 길이에 맞춰 마지막 화면에 다 나와 있게 ----------
+const ROW_TIME = 0.95;
+const REVEAL = Math.max(0, Math.min(DUR * 0.62, DUR - 0.3, ST.LAST - 1e-4));
+const PACE = Math.min(1, REVEAL * 0.5 / ROW_TIME);
+const T0 = Math.min(0.7, REVEAL * 0.15);
+const GAP = N > 1 ? Math.max(0, Math.min(0.55, (REVEAL - T0 - ROW_TIME * PACE) / (N - 1))) : 0;
+const start = i => T0 + i * GAP;
+const step = (t, i, from, len) => at(t, start(i) + from * PACE, len * PACE);
+if (start(N - 1) + ROW_TIME * PACE > ST.LAST + 1e-6) ISSUES.push('영상이 너무 짧아 마지막 화면에 모든 줄이 다 나오지 않음');
+
+// ---------- 한 번만 구워 두는 것: 배경판과 마감 층(순위판과 같다) ----------
+const PLATE = (() => {
+  const e = B.mk(PW, PH), g = e.getContext('2d');
+  if (typeof SK.backdrop === 'function') { SK.backdrop({ g, B, PW, PH, U }); return e; }
+  if (SK.plain) { g.fillStyle = SK.bg; g.fillRect(0, 0, PW, PH); return e; }
+  if (SK.touch) { B.touch(g, PW, PH, { color: SK.bg, seed: 5, u: U, ...SK.touch }); return e; }
+  g.fillStyle = B.tex(SK.bg, 'paper', U); g.fillRect(0, 0, PW, PH);
+  B.mottle(g, PW, PH, { seed: 5, light: SK.bgLight, dark: SK.bgDark, u: U, n: Math.round(34 * PW * PH / (518400 * U * U)) });
+  return e;
+})();
+const WASH = B.wash(PW, PH, 12, U), GRAIN = B.grain(PW, PH, 3, U);
+const ICONS = SK.icons || null;
+function icon(code, cx, cy, size, alpha = 1) {
+  const im = ICONS && code ? ICONS[code[0]] : null; if (!im || !im.naturalWidth || alpha <= 0 || size <= 0) return;
+  const n = +code.slice(1) - 1;
+  X.save(); X.globalAlpha *= Math.min(1, alpha);
+  X.drawImage(im, (n % 5) * ICONS.cell + ICONS.inset, Math.floor(n / 5) * ICONS.cell + ICONS.inset, ICONS.crop, ICONS.crop, cx - size / 2, cy - size / 2, size, size);
+  X.restore();
+}
+
+function title(t) {
+  const p = at(t, 0.05 * PACE, 0.45 * PACE); if (p <= 0) return;
+  if (TPLATE) {       // 화풍이 줄 때: 판 하나에 글자 한 겹
+    const P = DECO.plate, d = B.rrd(-TPLATE.w / 2, -TPLATE.h / 2, TPLATE.w, TPLATE.h, 14 * U);
+    X.save(); X.translate(CX, TPLATE.cy); const s = back(p); X.scale(s, s); X.globalAlpha = clamp01(p * 3);
+    B.paint(d, { fill: P.fill, tex: 'paint', scale: U, drop: 4 * U, pool: 0 });
+    if (P.line) B.outline(d, 3 * U, P.line, 301);
+    B.text(J.title, 0, TFIT.px * 0.36, TFIT.px, { align: 'center', color: P.color, maxW: TPLATE.w - 40 * U });
+    const isz = 56 * U, off = TPLATE.w / 2 + 16 * U + isz / 2;         // 제목 양옆 소품(설계도가 고른 것)
+    if (CX - off - isz / 2 >= Math.max(SAFE.l, 8 * U)) { icon(J.icon_left, -off, 0, isz); icon(J.icon_right, off, 0, isz); }
+    X.restore(); return;
+  }
+  X.save(); X.translate(CX, 80 * U); const s = back(p); X.scale(s, s); X.globalAlpha = clamp01(p * 3);
+  const r = B.text(J.title, 0, 0, TITLE_PX, { align: 'center', color: SK.yel, outline: 10 * U, tex: true, block: Math.max(2, Math.round(4 * U)), gloss: true, maxW: PW - 2 * MX });
+  X.restore();
+  const u = at(t, 0.35 * PACE, 0.4 * PACE);
+  if (u > 0) { X.save(); X.translate(CX, 80 * U); B.ink(B.seg(-r.w * 0.46, 22 * U, r.w * 0.46, 22 * U, 6 * U), 5 * U, SK.yel, 9, { to: u, taper: .25 }); X.restore(); }
+}
+
+function labels(t) {      // 편 이름: 두 편의 가운데 위에 편의 색 판으로
+  if (!LAB) return;
+  const p = at(t, 0.25 * PACE, 0.35 * PACE); if (p <= 0) return;
+  const y = TOP - LAB + 2 * U, h = LAB - 10 * U;
+  [[J.left_label, (X0 + CX) / 2, TEAM[J.left_color]], [J.right_label, (CX + X1) / 2, TEAM[J.right_color]]].forEach(([s, cx, fill], n) => {
+    if (!s) return;
+    const w = Math.min(width(s, h * 0.6) + 34 * UX, STRIPW / 2 - 20 * UX);
+    X.save(); X.globalAlpha = clamp01(p * 2); X.translate(cx, y + h / 2); X.scale(pop(p), pop(p));
+    B.art(B.rrd(-w / 2, -h / 2, w, h, h / 2), { fill, tex: 'paint', scale: U, lw: 2.4 * U, seed: 500 + n, drop: 3 * U, pool: 2 * U });
+    B.text(s, 0, h * 0.21, h * 0.6, { align: 'center', color: WHITE, maxW: w - 20 * UX });
+    X.restore();
+  });
+}
+
+function versusRow(i, t) {
+  const r = ROWS[i], a = step(t, i, 0, 0.32); if (a <= 0) return;
+  const y = TOP + i * PITCH, cy = y + SH / 2, mid = cy + PX * 0.36, { BR, NAME_W, VAL_W, BARW, TOPV, BARS } = G;
+  X.save(); X.globalAlpha = clamp01(a * 2.2); X.translate(0, (1 - easeOut(a)) * 26 * U);
+  B.art(B.rrd(X0, y, STRIPW, SH, 10 * U), { fill: SK.paper, tex: 'paper', scale: U, lw: 2.6 * U, seed: 20 + i, drop: 3.5 * U, shade: 2.2 * U, pool: 4 * U });
+  // 이름: 배지 바로 옆
+  const nameL = CX - BR - 12 * UX, nameR = CX + BR + 12 * UX;
+  B.text(r.left.name, nameL, mid, PX, { align: 'right', maxW: NAME_W });
+  B.text(r.right.name, nameR, mid, PX, { align: 'left', maxW: NAME_W });
+  // 막대: 이름 바깥쪽에서 화면 가장자리 쪽으로 자란다. 값은 막대 끝에
+  const grow = easeOut(step(t, i, 0.22, 0.55)), v = step(t, i, 0.62, 0.25), won = step(t, i, 0.8, 0.3);
+  [['left', -1, nameL - NAME_W - 14 * UX, TEAM[J.left_color]], ['right', 1, nameR + NAME_W + 14 * UX, TEAM[J.right_color]]].forEach(([side, dir, from, fill], n) => {
+    const s = r[side], val = s.value ?? 0;
+    const len = BARS && val > 0 ? Math.round(BARW * (val / TOPV) * grow * 2) / 2 : 0;
+    if (len >= 5 * U) B.art(B.rrd(dir < 0 ? from - len : from, y + SH * 0.26, len, SH * 0.48, Math.min(7 * U, len / 2)), { fill, scale: U, lw: 2.2 * U, seed: 60 + i * 2 + n, shade: 2 * U, pool: 3 * U });
+    if (v <= 0) return;
+    const full = BARS && val > 0 ? Math.round(BARW * (val / TOPV)) : 0, tip = from + dir * (full + 10 * UX);      // 값은 다 자란 막대의 끝에 놓는다
+    const fw = fit(s.value_text, PX, VAL_W - 26 * UX), win = r.winner === side;
+    X.save(); X.globalAlpha *= v;
+    if (win && won > 0) {       // 이긴 쪽: 값 뒤에 노란 판
+      const w = fw.w + 22 * UX, h = SH * 0.74, x = dir < 0 ? tip - w : tip, k = pop(won);
+      X.save(); X.translate(x + w / 2, cy); X.scale(k, k);
+      B.art(B.rrd(-w / 2, -h / 2, w, h, 8 * U), { fill: SK.yel, tex: 'paint', scale: U, lw: 2.4 * U, seed: 80 + i, drop: 2.5 * U, pool: 2 * U });
+      X.restore();
+    }
+    B.text(s.value_text, dir < 0 ? tip - (win ? 11 * UX : 0) : tip + (win ? 11 * UX : 0), mid, PX, { align: dir < 0 ? 'right' : 'left', maxW: VAL_W - 26 * UX });
+    X.restore();
+  });
+  // VS 배지: 짙은 동그라미에 흰 글자. 동점이면 값이 다 나온 뒤 노란 '동점' 배지로 바뀐다(위아래 줄에 걸치지 않게 배지 안에서)
+  const tie = r.winner === 'tie' && won >= 0.5, b = tie ? pop(won) : pop(step(t, i, 0.1, 0.35));
+  if (b > 0) {
+    X.save(); X.translate(CX, cy); X.scale(b * BR / 20, b * BR / 20);
+    B.art(MEDAL, { fill: tie ? SK.yel : SK.ink, tex: 'paint', lw: 2.6, seed: 40 + i, shade: 2, drop: 2.5, pool: 0 });
+    X.restore();
+    if (tie) B.text('동점', CX, cy + BR * 0.22 * b, BR * 0.6 * b, { align: 'center', maxW: BR * 1.6 });
+    else B.text('VS', CX, cy + BR * 0.3 * b, BR * 0.82 * b, { align: 'center', color: WHITE });
+  }
+  X.restore();
+}
+
+function rulesRow(i, t) {
+  const r = ROWS[i], a = step(t, i, 0, 0.32); if (a <= 0) return;
+  const y = TOP + i * PITCH, cy = y + SH / 2, mid = cy + PX * 0.36, { BR, ROOM, HEAD_W, BODY_PX } = G;
+  X.save(); X.globalAlpha = clamp01(a * 2.2); X.translate((1 - easeOut(a)) * 46 * U, 0);
+  const x0 = X0 + BR * 2 + 14 * UX;
+  B.art(B.rrd(x0, y, X1 - x0, SH, 10 * U), { fill: SK.paper, tex: 'paper', scale: U, lw: 2.6 * U, seed: 20 + i, drop: 3.5 * U, shade: 2.2 * U, pool: 4 * U });
+  const medal = (SK.bar || [])[i % Math.max(1, (SK.bar || []).length)] || SK.yel, k = BR / 20;      // 번호 메달은 줄마다 다른 색(화풍의 막대 색)
+  X.save(); X.translate(X0 + BR, cy); X.scale(k, k);
+  B.art(MEDAL, { fill: medal, tex: 'paint', lw: 2.8, seed: 40 + i, shade: 2.5, drop: 2.5, pool: 3 });
+  X.restore();
+  B.text(String(i + 1), X0 + BR, cy + BR * 1.15 * 0.36, BR * 1.15, { align: 'center' });
+  let x = x0 + PAD;
+  if (r.heading) { B.text(r.heading, x, mid, PX, { maxW: HEAD_W }); x += Math.min(width(r.heading, PX), HEAD_W) + 20 * UX; }
+  const v = step(t, i, 0.3, 0.3);
+  if (r.body && v > 0) { X.save(); X.globalAlpha *= v; B.text(r.body, x, cy + BODY_PX * 0.36, BODY_PX, { maxW: X1 - PAD - x }); X.restore(); }
+  X.restore();
+}
+
+function content(t) {
+  B.boil = 0;
+  X.drawImage(PLATE, 0, 0);
+  title(t);
+  labels(t);
+  for (let i = 0; i < N; i++) (VS ? versusRow : rulesRow)(i, t);
+  if (typeof SK.overlay === 'function') SK.overlay({ X, B, U, PW, PH, J, t, TITLE: TBOX, show: at(t, 0.05 * PACE, 0.45 * PACE) });
+  X.save();
+  X.globalCompositeOperation = 'soft-light';
+  if (SK.finish.wash) { X.globalAlpha = SK.finish.wash; X.drawImage(WASH, 0, 0); }
+  if (SK.finish.grain) { X.globalAlpha = SK.finish.grain; X.drawImage(GRAIN, 0, 0); }
+  X.globalCompositeOperation = 'source-over'; X.globalAlpha = 1;
+  const vg = X.createRadialGradient(PW / 2, PH / 2, 250 * U, PW / 2, PH / 2, 620 * U); vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, SK.finish.edge);
+  X.fillStyle = vg; X.fillRect(0, 0, PW, PH);
+  X.restore();
+}
+
+ST.run(content, null, () => [...new Set(ISSUES)]);
+});
+</script>
+</body>
+</html>

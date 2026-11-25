@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- 가상 출연자 3 — 모자와 안경. 실제 인물이 아니다 -->
+  <rect width="256" height="256" fill="#4aa8ff"/>
+  <path d="M34 262c6-46 42-64 94-64s88 18 94 64z" fill="#f5f0e6" stroke="#0b0c0f" stroke-width="8" stroke-linejoin="round"/>
+  <ellipse cx="128" cy="136" rx="68" ry="74" fill="#e9b88f" stroke="#0b0c0f" stroke-width="8"/>
+  <path d="M58 106c2-48 34-72 70-72s68 24 70 72z" fill="#e5372c" stroke="#0b0c0f" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M46 106h150c22 0 36 8 42 22H46z" fill="#b3261c" stroke="#0b0c0f" stroke-width="8" stroke-linejoin="round"/>
+  <rect x="78" y="126" width="42" height="30" rx="9" fill="#ffffff" stroke="#0b0c0f" stroke-width="7"/>
+  <rect x="136" y="126" width="42" height="30" rx="9" fill="#ffffff" stroke="#0b0c0f" stroke-width="7"/>
+  <path d="M120 140h16" stroke="#0b0c0f" stroke-width="7"/>
+  <circle cx="99" cy="142" r="6" fill="#0b0c0f"/>
+  <circle cx="157" cy="142" r="6" fill="#0b0c0f"/>
+  <path d="M104 180h48" fill="none" stroke="#0b0c0f" stroke-width="8" stroke-linecap="round"/>
+</svg>

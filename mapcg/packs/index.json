@@ -1,0 +1,15 @@
+{
+ "seoul_major.json.gz": {
+  "name": "seoul",
+  "label": "서울",
+  "bbox": [
+   37.413,
+   126.734,
+   37.715,
+   127.27
+  ],
+  "detail": "major",
+  "made": "2026-11-20",
+  "source": "© OpenStreetMap contributors (ODbL)"
+ }
+}

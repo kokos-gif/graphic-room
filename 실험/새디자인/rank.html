@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>새 디자인 기준 화면 — 순위판</title>
+<!--
+  새 디자인의 기준 화면(순위판 한 장). 방향을 확인받기 위한 것이라 앱에는 아직 연결하지 않았다.
+  설계 원칙
+    - 방송 화면처럼 구성한다: 코너 제목(오른쪽 위), 프로그램 이름표(왼쪽 위), 공개 진행 표시, 아래쪽 설명 자막 띠까지 한 프레임에.
+    - 밀도: 한 요소를 한 겹으로 끝내지 않는다. 바탕(붓 자국) → 재질(나무결·천 무늬) → 명암 두 단 → 붓펜 선 → 박음질·못·광택 → 금가루.
+    - 붓 자국은 살린다(바탕 전체). 재질은 나무결·천·불빛 — 3D 캠핑장 작업의 재질 만드는 기법을 2D 로 옮긴 것.
+    - 금색 글자와 반짝이. 한 점에서 뻗는 줄무늬(욱일기 연상)·망점·기울인 자막·지어낸 제목은 쓰지 않는다.
+    - 색은 남색·하늘색·노랑(금)·빨강·크림을 통일해서 쓴다.
+  내용 규칙은 그대로다: 값은 받은 글자 그대로, 화면의 숫자는 의뢰에 있는 것(순위·값·참가 수)뿐이다.
+-->
+<style>
+  html,body{margin:0;height:100%;background:#15171b;overflow:hidden}
+  body.bare{background:transparent}
+  #c{position:absolute;left:0;top:0;transform-origin:0 0}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="stage.js"></script>
+<script src="job.js"></script>
+<script src="brush.js"></script>
+<script>
+"use strict";
+const J = window.JOB;
+const INK = '#221b33', CREAM = '#fbf3e0', NAVY = '#1b2a63', DEEP = '#131c47', SKY = '#2fb8ff', YEL = '#ffd23a', RED = '#e8503a', GREEN = '#2f9e6b', PURPLE = '#8a5fd0', ORANGE = '#f08a2c', WOOD = '#b9824e';
+const LOOK = { font: '"Malgun Gothic","맑은 고딕",sans-serif', ink: INK, paper: CREAM, shadow: 'rgba(8,10,34,.5)', shade: 'rgba(24,14,60,.24)', lit: 'rgba(255,255,255,.3)', pool: 'rgba(24,14,60,.12)' };
+const ST = Stage(J, LOOK), { X, PW, PH, U } = ST;
+const B = Brush(X, LOOK), W = 960, H = 540, TAU = Math.PI * 2;      // 아래 그림은 전부 960×540 눈금으로 그리고 U 배로 키운다
+const clamp01 = v => Math.max(0, Math.min(1, v));
+const ROWS = J.rows, N = ROWS.length, TOPV = Math.max(0, ...ROWS.map(r => r.value ?? 0));
+const font = (px, w = 900) => `${w} ${px}px ${LOOK.font}`;
+const widthOf = (s, px) => { X.font = font(px); return X.measureText(s).width; };
+
+// ---------- 재질: 무늬 타일을 구워 되풀이 무늬로 쓴다(3D 캠핑장 작업의 손그림 텍스처 요리법을 2D 로 옮김) ----------
+const tile = (w, h, draw) => { const e = B.mk(w * 2, h * 2), g = e.getContext('2d'); g.scale(2, 2); draw(g, B.rng(w * 31 + h)); const p = X.createPattern(e, 'repeat'); p.setTransform(new DOMMatrix([.5, 0, 0, .5, 0, 0])); return p; };
+const wood = color => tile(256, 64, (g, R) => {          // 나뭇결: 물결치는 가로선 + 옹이
+  g.fillStyle = color; g.fillRect(0, 0, 256, 64);
+  for (let i = 0; i < 46; i++) { const y = R() * 64, a = 1 + R() * 2.5; g.strokeStyle = R() < .6 ? B.tone(color, -26) : B.tone(color, 20); g.globalAlpha = .14 + R() * .22; g.lineWidth = .5 + R() * 1.4;
+    for (const oy of [-64, 0, 64]) { g.beginPath(); for (let x = -8; x <= 264; x += 8) g.lineTo(x, y + oy + Math.sin(x * .0245 * 2 + i) * a); g.stroke(); } }
+  g.globalAlpha = .45; g.strokeStyle = B.tone(color, -44); g.lineWidth = .9;
+  for (const [kx, ky] of [[70, 22], [190, 46]]) for (let r = 1.5; r < 8; r += 2) { g.beginPath(); g.ellipse(kx, ky, r * 1.8, r * .7, 0, 0, TAU); g.stroke(); }
+});
+const cloth = color => tile(64, 64, (g, R) => {          // 천: 가는 올 + 얼룩
+  g.fillStyle = color; g.fillRect(0, 0, 64, 64);
+  g.strokeStyle = B.tone(color, -40); g.globalAlpha = .08; g.lineWidth = .6; for (let i = 0; i < 64; i += 2.5) { g.beginPath(); g.moveTo(i, 0); g.lineTo(i, 64); g.moveTo(0, i); g.lineTo(64, i); g.stroke(); }
+  for (let i = 0; i < 26; i++) { g.globalAlpha = .05; g.fillStyle = R() < .5 ? '#ffffff' : B.tone(color, -50); g.fillRect(R() * 64, R() * 64, 6 + R() * 20, 2 + R() * 6); }
+});
+const gingham = (a, b, n = 6) => tile(n * 2, n * 2, g => { g.fillStyle = a; g.fillRect(0, 0, n * 2, n * 2); g.fillStyle = b; g.globalAlpha = .55; g.fillRect(0, 0, n, n * 2); g.fillRect(0, 0, n * 2, n); });
+const stripes = (a, b, n = 5) => tile(n * 2, n * 2, g => { g.fillStyle = a; g.fillRect(0, 0, n * 2, n * 2); g.fillStyle = b; g.fillRect(0, 0, n, n * 2); });
+const TEX = { wood: wood(WOOD), woodDark: wood('#7a4f30'), cream: cloth(CREAM), navy: cloth(NAVY), deep: cloth(DEEP), red: cloth(RED), yel: cloth(YEL), sky: cloth(SKY),
+  flags: [gingham('#fff8ee', RED), stripes(YEL, '#ffe9a0'), gingham('#fff8ee', SKY), stripes(GREEN, '#6cc79a'), gingham('#fff8ee', PURPLE)] };
+
+// 한 조각: 재질 → 명암 두 단(위 밝게 · 아래 그늘, 경계는 끊는다) → 붓펜 선. fill 은 색이나 무늬
+const piece = (d, fill, o = {}) => B.art(d, { fill, tex: null, lw: 2.2, shade: 3, drop: 0, pool: 3, ...o });
+const stitch = (d, color = 'rgba(34,27,51,.45)') => { X.save(); X.setLineDash([4, 3.2]); X.strokeStyle = color; X.lineWidth = 1; X.stroke(B.p2d(d)); X.restore(); };      // 박음질
+const nail = (x, y) => { X.fillStyle = '#4a5257'; X.beginPath(); X.arc(x, y, 2.3, 0, TAU); X.fill(); X.fillStyle = '#c9d0d3'; X.beginPath(); X.arc(x - .6, y - .7, .9, 0, TAU); X.fill(); };
+
+// ---------- 빛과 반짝이 ----------
+function glow(x, y, r, color, a = .5) { const g = X.createRadialGradient(x, y, 0, x, y, r); g.addColorStop(0, color); g.addColorStop(1, 'rgba(255,255,255,0)');
+  X.save(); X.globalCompositeOperation = 'lighter'; X.globalAlpha *= a; X.fillStyle = g; X.beginPath(); X.arc(x, y, r, 0, TAU); X.fill(); X.restore(); }
+// 금가루 한 알: 가운데가 가는 네 갈래 별 + 번진 빛. 제자리에서 커졌다 작아지기만 한다
+function sparkle(x, y, r, t, phase, color = '#fff6c8') {
+  const s = .25 + .75 * Math.abs(Math.sin(t * 2.4 + phase)); if (r * s < .6) return;
+  glow(x, y, r * 1.5 * s, '#ffe9a0', .55);
+  X.save(); X.translate(x, y); X.scale(s, s); X.fillStyle = color; X.beginPath();
+  for (let i = 0; i < 8; i++) { const a = i * TAU / 8, k = i % 2 ? r * .17 : (i % 4 ? r * .62 : r); X.lineTo(Math.cos(a) * k, Math.sin(a) * k); }
+  X.closePath(); X.fill(); X.restore();
+}
+const GOLD = ['#fff6c0', '#ffd84a', '#c98f10', '#ffd24a', '#8a5a00'];
+// 금색 글자: 그림자 → 진한 테 → 흰 테 → 갈색 테 → 금속 그라데이션 → 윗면 광택. 기울이지 않는다
+function gold(str, x, y, px, o = {}) {
+  const { align = 'center', maxW = 0, plain = null } = o; let p = px; X.font = font(p);
+  if (maxW) while (X.measureText(str).width > maxW && p > 8) { p -= 1; X.font = font(p); }
+  X.textAlign = align; X.textBaseline = 'alphabetic'; X.lineJoin = 'round';
+  X.fillStyle = X.strokeStyle = 'rgba(8,10,34,.75)'; X.lineWidth = p * .3; X.strokeText(str, x + p * .05, y + p * .075); X.fillText(str, x + p * .05, y + p * .075);
+  // 처음에는 금속 그라데이션에 테를 세 겹 둘렀으나 작게 보면 획이 뭉개져 읽히지 않았다 — 민색 노랑에 진한 테 한 겹만 둔다
+  X.strokeStyle = INK; X.lineWidth = p * .28; X.strokeText(str, x, y);
+  X.fillStyle = plain || B.tex(YEL, 'paint'); X.fillText(str, x, y);
+  const mw = X.measureText(str).width, x0 = align === 'center' ? x - mw / 2 : align === 'right' ? x - mw : x;
+  return { px: p, x0, w: mw };
+}
+// 보통 글자: 진한 테 한 겹 + 한 겹 그림자
+function label(str, x, y, px, color = '#ffffff', o = {}) {
+  const { align = 'left', maxW = 0, edge = INK, w = 900 } = o; let p = px; X.font = font(p, w);
+  if (maxW) while (X.measureText(str).width > maxW && p > 7) { p -= 1; X.font = font(p, w); }
+  X.textAlign = align; X.textBaseline = 'alphabetic'; X.lineJoin = 'round';
+  if (edge) { X.strokeStyle = edge; X.lineWidth = p * .24; X.strokeText(str, x + p * .04, y + p * .06); X.strokeText(str, x, y); }
+  X.fillStyle = color; X.fillText(str, x, y); return p;
+}
+
+// ---------- 한 번만 구워 두는 바탕: 붓 자국으로 채운 남색 + 위아래 그늘 + 금빛 번짐 ----------
+const PLATE = (() => {
+  const e = B.mk(PW, PH), g = e.getContext('2d'), R = B.rng(11);
+  B.touch(g, PW, PH, { color: '#234a93', flow: 'water', spread: 34, len: 25, wid: 3.5, gap: 6, seed: 7, u: U });
+  const sh = g.createLinearGradient(0, 0, 0, PH); sh.addColorStop(0, 'rgba(10,14,48,.5)'); sh.addColorStop(.24, 'rgba(10,14,48,0)'); sh.addColorStop(.8, 'rgba(10,14,48,0)'); sh.addColorStop(1, 'rgba(10,14,48,.55)');
+  g.fillStyle = sh; g.fillRect(0, 0, PW, PH);
+  g.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 46; i++) { const x = R() * PW, y = R() * PH * .5, r = (5 + R() * 22) * U, k = g.createRadialGradient(x, y, 0, x, y, r);
+    k.addColorStop(0, `rgba(255,214,110,${.05 + R() * .13})`); k.addColorStop(1, 'rgba(255,214,110,0)'); g.fillStyle = k; g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill(); }
+  return e;
+})();
+
+// ---------- 위쪽: 전구 줄, 가랜드, 프로그램 이름표, 코너 제목, 제목판 ----------
+const sag = (x0, y0, x1, y1, drop, n = 24) => Array.from({ length: n + 1 }, (_, i) => { const u = i / n; return [x0 + (x1 - x0) * u, y0 + (y1 - y0) * u + Math.sin(u * Math.PI) * drop]; });
+function lights(t) {
+  const P = sag(-10, 6, 970, 4, 20, 40);
+  B.ink(P, 1.8, '#0e1230', 3, { taper: 0, wob: .2 });
+  for (let i = 2; i < P.length - 1; i += 3) { const [x, y] = P[i], col = [YEL, '#ff8f7a', '#8fe0ff', '#9be7b4'][(i / 3 | 0) % 4], on = .65 + .35 * Math.sin(t * 3 + i);
+    glow(x, y + 7, 26, col, .34 * on);
+    X.fillStyle = '#39405e'; X.fillRect(x - 2.2, y - .5, 4.4, 4);
+    piece(B.ell(x, y + 8.5, 4.6, 5.6), col, { lw: 1.5, shade: 1.6, pool: 0, seed: i });
+    X.fillStyle = 'rgba(255,255,255,.85)'; X.beginPath(); X.ellipse(x - 1.5, y + 6.6, 1.2, 1.9, -.5, 0, TAU); X.fill(); }
+}
+function bunting(x0, y0, x1, y1, drop, seed) {
+  const P = sag(x0, y0, x1, y1, drop, 16);
+  B.ink(P, 1.6, '#f3e7c9', seed, { taper: 0, wob: .2 });
+  for (let i = 1; i < P.length - 2; i += 2) { const [ax, ay] = P[i], [bx, by] = P[i + 1], mx = (ax + bx) / 2, my = (ay + by) / 2;
+    piece(`M${ax.toFixed(1)} ${ay.toFixed(1)} L${bx.toFixed(1)} ${by.toFixed(1)} L${(mx + 1).toFixed(1)} ${(my + 19).toFixed(1)}Z`, TEX.flags[(i >> 1) % 5], { lw: 1.5, shade: 1.5, pool: 0, drop: 1.5, seed: seed + i }); }
+}
+function tag(x, y, w, h, text, fill, color, o = {}) {       // 작은 이름표: 재질 면 + 박음질 + 글자
+  const d = B.rrd(x, y, w, h, o.r ?? 7);
+  piece(d, fill, { drop: 2.5, seed: o.seed ?? 5, lw: 2 });
+  stitch(B.rrd(x + 3, y + 3, w - 6, h - 6, Math.max(1, (o.r ?? 7) - 3)), o.thread || 'rgba(255,255,255,.55)');
+  label(text, x + w / 2, y + h / 2 + (o.px ?? 14) * .36, o.px ?? 14, color, { align: 'center', maxW: w - 14, edge: o.edge === undefined ? INK : o.edge });
+}
+function upper(t) {
+  bunting(14, 22, 250, 40, 7, 31); bunting(710, 40, 946, 22, 7, 47);
+  lights(t);
+  // 금가루: 위쪽에 흩뿌린 작은 알갱이(제자리에서 깜박인다)
+  const D = B.rng(77);
+  for (let i = 0; i < 70; i++) { const x = D() * W, y = D() * 130, r = .8 + D() * 1.6, a = .35 + .65 * Math.abs(Math.sin(t * 2 + i * 1.7));
+    X.globalAlpha = a; X.fillStyle = i % 3 ? '#ffe08a' : '#ffffff'; X.beginPath(); X.arc(x, y, r, 0, TAU); X.fill(); }
+  X.globalAlpha = 1;
+  // 옆 자막(오른쪽 가장자리): 세로 띠에 한 글자씩
+  piece(B.rrd(902, 150, 34, 124, 8), TEX.sky, { drop: 3, seed: 66, lw: 2.2 }); stitch(B.rrd(905, 153, 28, 118, 5));
+  [...'최종결과'].forEach((ch, i) => label(ch, 919, 181 + i * 27, 19, '#ffffff', { align: 'center' }));
+  sparkle(904, 150, 9, t, 2.2); sparkle(934, 276, 7, t, 4.9);
+  // 프로그램 이름표(왼쪽 위): 끈에 매단 크림색 꼬리표
+  if (J.program) { const w = Math.min(230, widthOf(J.program, 13) + 44);
+    piece(B.rrd(22, 62, w, 28, 6), TEX.cream, { drop: 2.5, seed: 61, lw: 2 }); stitch(B.rrd(25, 65, w - 6, 22, 4), 'rgba(34,27,51,.4)');
+    piece(B.ell(36, 76, 5, 5), RED, { lw: 1.4, shade: 1.2, pool: 0, seed: 62 });
+    label(J.program, 48, 81, 13, INK, { maxW: w - 34, edge: null, w: 800 }); }
+  // 코너 제목(오른쪽 위) + 공개 진행 표시
+  tag(772, 60, 166, 30, '순위 발표', TEX.red, '#ffffff', { seed: 63, px: 15 });
+  sparkle(778, 62, 7, t, 1.1);
+  const done = ROWS.filter((_, i) => true).length;
+  label('공개', 786, 108, 10.5, '#dfe8ff', { edge: DEEP, w: 800 });
+  ROWS.forEach((_, i) => { const x = 818 + i * Math.min(15, 104 / N); piece(B.ell(x, 104.5, 4.6, 4.6), i < done ? YEL : '#42508f', { lw: 1.3, shade: 1, pool: 0, seed: 70 + i }); });
+  // 제목판: 밧줄에 매단 나무판 + 금색 글자
+  for (const x of [322, 638]) { B.ink(B.seg(x, 2, x, 40, 4), 2.4, '#e9d9b0', x, { taper: 0, wob: .25 }); }
+  piece(B.rrd(246, 38, 468, 66, 9), TEX.woodDark, { drop: 5, shade: 4, seed: 64, lw: 2.8 });
+  piece(B.rrd(254, 45, 452, 52, 6), TEX.wood, { shade: 3, seed: 65, lw: 2 });
+  for (const [x, y] of [[262, 52], [698, 52], [262, 90], [698, 90]]) nail(x, y);
+  const r = gold(J.title, 480, 86, 37, { maxW: 410 });
+  [[-r.w / 2 - 14, -30, 15, .3], [r.w / 2 + 16, -34, 18, 2], [r.w / 2 - 24, 12, 9, 4.1], [-r.w / 2 + 34, 14, 8, 5.2], [0, -44, 10, 3.3], [-r.w / 4, -38, 6, 1.4], [r.w / 4, 16, 6, 5.9], [-r.w / 2 - 40, 6, 7, 2.8], [r.w / 2 + 44, 0, 8, .9]]
+    .forEach(([dx, dy, k, ph]) => sparkle(480 + dx, 76 + dy, k, t, ph));
+}
+
+// ---------- 순위 줄 ----------
+const AREA_Y = 124, AREA_H = 336, GAP = 7;
+const BASE = (AREA_H - GAP * (N - 1)) / (N + .26), HEIGHT = i => i === 0 ? BASE * 1.26 : BASE;
+const TOP_OF = i => AREA_Y + (i === 0 ? 0 : BASE * 1.26 + GAP + (i - 1) * (BASE + GAP));
+const MEDAL = ['#ffcf3a', '#cfd6e4', '#e2a26b'], AVATAR = [RED, SKY, GREEN, PURPLE, ORANGE];
+const NAME_PX = Math.min(25, BASE * .46), PLATE_X = 150, PLATE_W = 736;      // 오른쪽 끝(886) 바깥은 옆 자막 자리
+const NAME_W = Math.min(Math.max(...ROWS.map(r => widthOf(r.name, NAME_PX))), 170), VAL_W = Math.min(Math.max(...ROWS.map(r => widthOf(r.show, NAME_PX))) + 30, 190);
+const BAR_X = PLATE_X + 62 + NAME_W + 16, BAR_W = PLATE_X + PLATE_W - 16 - VAL_W - 12 - BAR_X;
+function row(i, t) {
+  const r = ROWS[i], y = TOP_OF(i), h = HEIGHT(i), cy = y + h / 2, first = r.rank === 1, px = first ? NAME_PX * 1.14 : NAME_PX;
+  // 줄판: 나무 테 + 천 면 + 박음질
+  if (first) glow(PLATE_X + PLATE_W / 2, cy, 330, '#ffd66e', .16);
+  piece(B.rrd(PLATE_X, y, PLATE_W, h, 9), first ? TEX.yel : TEX.wood, { drop: 4, shade: 3.5, seed: 100 + i, lw: 2.6 });
+  piece(B.rrd(PLATE_X + 5, y + 5, PLATE_W - 10, h - 10, 6), TEX.cream, { shade: 2.5, seed: 110 + i, lw: 1.8 });
+  stitch(B.rrd(PLATE_X + 9, y + 9, PLATE_W - 18, h - 18, 4), 'rgba(34,27,51,.3)');
+  // 순위 메달: 리본 꼬리 두 갈래 + 원반 + 안쪽 고리 + 광택
+  const mx = 110, mr = Math.min(first ? 27 : 22, h * .46), color = MEDAL[r.rank - 1] || '#f1e7cf';
+  for (const s of [-1, 1]) piece(`M${mx + s * 3} ${cy + mr * .3} L${mx + s * mr * .95} ${cy + mr * 1.25} L${mx + s * mr * .5} ${cy + mr * 1.02} L${mx + s * mr * .2} ${cy + mr * 1.42}Z`, r.rank <= 3 ? TEX.red : TEX.navy, { lw: 1.6, shade: 1.5, pool: 0, seed: 120 + i });
+  piece(B.ell(mx, cy, mr, mr), color, { drop: 3, shade: 3, seed: 130 + i, lw: 2.6 });
+  X.strokeStyle = 'rgba(34,27,51,.35)'; X.lineWidth = 1.2; X.beginPath(); X.arc(mx, cy, mr * .78, 0, TAU); X.stroke();
+  X.strokeStyle = 'rgba(255,255,255,.75)'; X.lineWidth = 2; X.lineCap = 'round'; X.beginPath(); X.arc(mx, cy, mr * .6, Math.PI * 1.05, Math.PI * 1.45); X.stroke();
+  label(String(r.rank), mx, cy + mr * .42, mr * (String(r.rank).length > 1 ? .95 : 1.2), '#ffffff', { align: 'center' });
+  if (first) {        // 1위: 왕관
+    piece(`M${mx - 15} ${cy - mr - 2} L${mx - 18} ${cy - mr - 20} L${mx - 7} ${cy - mr - 11} L${mx} ${cy - mr - 24} L${mx + 7} ${cy - mr - 11} L${mx + 18} ${cy - mr - 20} L${mx + 15} ${cy - mr - 2}Z`, '#ffcf3a', { lw: 2, shade: 2, drop: 2, seed: 140 });
+    [[-18, -20, RED], [0, -24, SKY], [18, -20, GREEN]].forEach(([dx, dy, col]) => { X.fillStyle = col; X.beginPath(); X.arc(mx + dx, cy - mr + dy, 2.6, 0, TAU); X.fill(); });
+  }
+  // 얼굴 자리: 무늬 바탕 동그라미에 이름 첫 글자
+  const ax = PLATE_X + 34, ar = Math.min(19, h * .36);
+  piece(B.ell(ax, cy, ar, ar), gingham('#fff8ee', AVATAR[i % 5], 4), { lw: 2, shade: 2, drop: 2, seed: 150 + i });
+  label(r.name.slice(0, 1), ax, cy + ar * .42, ar * 1.1, '#ffffff', { align: 'center' });
+  // 이름
+  label(r.name, PLATE_X + 62, cy + px * .36, px, INK, { maxW: NAME_W, edge: null });
+  // 막대: 홈(눈금 달린) + 물감 막대(명암 두 단 + 광택 줄)
+  if (TOPV > 0 && BAR_W > 60 && r.value > 0) {
+    const bh = Math.min(22, h * .42), by = cy - bh / 2, len = Math.max(10, BAR_W * r.value / TOPV);
+    piece(B.rrd(BAR_X, by, BAR_W, bh, bh / 2), TEX.deep, { lw: 1.6, shade: 0, pool: 0, seed: 160 + i });
+    X.strokeStyle = 'rgba(255,255,255,.22)'; X.lineWidth = 1; for (let k = 1; k < 10; k++) { const tx = BAR_X + BAR_W * k / 10; X.beginPath(); X.moveTo(tx, by + bh - 5); X.lineTo(tx, by + bh - 1.5); X.stroke(); }
+    piece(B.rrd(BAR_X + 2, by + 2, len - 4, bh - 4, (bh - 4) / 2), first ? RED : [ORANGE, SKY, SKY, SKY][Math.min(i - 1, 3)], { lw: 1.6, shade: 2.6, pool: 2, seed: 170 + i });
+    X.strokeStyle = 'rgba(255,255,255,.6)'; X.lineWidth = 2.2; X.lineCap = 'round'; X.beginPath(); X.moveTo(BAR_X + 11, by + 6); X.lineTo(BAR_X + len - 14, by + 6); X.stroke();
+    if (first) sparkle(BAR_X + len - 6, by + 3, 6, t, 2.6);
+  }
+  // 값: 남색 판 위에 받은 글자 그대로(1위는 금색)
+  const vx = PLATE_X + PLATE_W - 16 - VAL_W, vh = Math.min(30, h * .6);
+  piece(B.rrd(vx, cy - vh / 2, VAL_W, vh, 7), TEX.navy, { lw: 2, shade: 2, drop: 2, seed: 180 + i });
+  if (first) gold(r.show, vx + VAL_W / 2, cy + px * .34, px * .92, { maxW: VAL_W - 16 });
+  else label(r.show, vx + VAL_W / 2, cy + px * .34, px * .88, '#ffffff', { align: 'center', maxW: VAL_W - 16, edge: DEEP });
+  if (first) [[PLATE_X + 6, y + 4, 15, .7], [PLATE_X + PLATE_W - 8, y + h - 5, 13, 3.9], [vx - 6, y + 6, 9, 5.5], [mx + mr * .9, cy - mr * .9, 11, 2.1], [mx - mr, cy + mr * .5, 7, 4.4], [PLATE_X + PLATE_W * .5, y + 2, 7, 1.3], [vx + VAL_W - 4, cy - vh / 2, 10, 3.1]]
+    .forEach(([sx, sy, k, ph]) => sparkle(sx, sy, k, t, ph));
+  else if (r.rank <= 3) sparkle(mx + mr * .8, cy - mr * .8, 7, t, i * 2.3);
+}
+
+// ---------- 아래쪽 설명 자막 띠 ----------
+function band(t) {
+  piece(B.rrd(34, 474, 892, 46, 10), TEX.deep, { drop: 4, shade: 3, seed: 200, lw: 2.6 });
+  X.strokeStyle = '#ffd24a'; X.lineWidth = 1.6; X.stroke(B.p2d(B.rrd(39, 479, 882, 36, 7)));
+  tag(46, 483, 92, 28, '집계 결과', TEX.red, '#ffffff', { seed: 201, px: 13.5 });
+  label(`참가 ${N}명의 최종 순위`, 152, 503.5, 19, '#ffffff', { edge: '#0b1030', maxW: 500 });
+  if (J.unit) tag(800, 483, 114, 28, `단위 · ${J.unit}`, TEX.cream, INK, { seed: 202, px: 13, edge: null, thread: 'rgba(34,27,51,.4)' });
+  sparkle(140, 480, 5, t, 4.4); sparkle(912, 516, 6, t, 1.9);
+}
+
+function content(t) {
+  B.boil = 0;
+  X.drawImage(PLATE, 0, 0);
+  X.save(); X.scale(U, U);
+  upper(t);
+  for (let i = N - 1; i >= 0; i--) row(i, t);
+  band(t);
+  X.restore();
+}
+ST.run(content, null);
+</script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>지점 고르기</title>
+<!--
+  메신저의 '지도에서 정확히 지정' 창이 쓰는 화면. 지명 둘레의 바탕 지도를 그리고, 누른 곳의 위경도를 부모 창에 알린다.
+  pick.js(window.PICK: 원점·좌표 환산값·후보·이미 고른 지점)와 map-data.js 는 메신저 서버가 그때그때 만들어 준다.
+-->
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:transparent}
+  #c{position:absolute;left:0;top:0;transform-origin:0 0;cursor:crosshair}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="pick.js"></script>
+<script src="map-data.js"></script>
+<script src="brush.js"></script>
+<script src="mapskin.js"></script>
+<script src="basemap.js"></script>
+<script>
+"use strict";
+const P=window.PICK, PW=960, PH=540;
+const cv=document.getElementById('c'); cv.width=PW; cv.height=PH;
+const X=cv.getContext('2d');
+const K=MapKit(window.MAPDATA,PW,PH), {U,S,VX0,VY0,px}=K;
+const base=K.base(), lab=K.labels([],new Set());
+let picked=P.mark||null;                 // 고른 지점(미터 좌표)
+
+function render(){X.clearRect(0,0,PW,PH);X.drawImage(base,0,0);X.drawImage(lab,0,0);K.finish(X);
+  X.textAlign='center';X.textBaseline='middle';
+  for(const c of P.candidates||[]){const p=px(c.p);        // 이름으로 찾은 후보(번호)
+    X.beginPath();X.arc(p[0],p[1],11*U,0,7);X.fillStyle='#222';X.fill();X.lineWidth=2.5*U;X.strokeStyle='#fff';X.stroke();
+    X.fillStyle='#fff';X.font=`800 ${13*U}px ${FONT}`;X.fillText(String(c.n),p[0],p[1]+U)}
+  if(picked){const p=px(picked);
+    X.strokeStyle='rgba(255,59,48,.45)';X.lineWidth=1.5*U;X.beginPath();X.moveTo(p[0],0);X.lineTo(p[0],PH);X.moveTo(0,p[1]);X.lineTo(PW,p[1]);X.stroke();
+    X.beginPath();X.arc(p[0],p[1],9*U,0,7);X.fillStyle='#fff';X.fill();X.lineWidth=5*U;X.strokeStyle='#ff3b30';X.stroke()}}
+
+function fit(){const s=Math.min(innerWidth/PW,innerHeight/PH);
+  cv.style.transform=`translate(${(innerWidth-PW*s)/2}px,${(innerHeight-PH*s)/2}px) scale(${s})`}
+addEventListener('resize',fit);fit();
+cv.addEventListener('click',e=>{const r=cv.getBoundingClientRect();
+  picked=[(e.clientX-r.left)/r.width*PW/S+VX0,(e.clientY-r.top)/r.height*PH/S+VY0];render();
+  parent.postMessage({type:'mapcg-pick',lat:P.lat0-picked[1]/P.ky,lon:P.lon0+picked[0]/P.kx},location.origin)});
+render();
+window.__ready=true;
+</script>
+</body>
+</html>

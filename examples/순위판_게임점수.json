@@ -1,0 +1,19 @@
+{
+  "kind": "rank_board",
+  "program": "가상 예능 〈오늘도 출발〉",
+  "requester": {"name": "김가상", "role": "조연출", "phone": "010-0000-0000"},
+  "text": "출연자 게임 점수 순위판. 960*540, 8초.",
+  "title": "오늘의 게임 점수 순위",
+  "unit": "점",
+  "order": "input",
+  "rows": [
+    {"rank": 1, "name": "김가상", "value_text": "1,250"},
+    {"rank": 2, "name": "이가상", "value_text": "1,180"},
+    {"rank": 3, "name": "박가상", "value_text": "965"},
+    {"rank": 4, "name": "최가상", "value_text": "720"},
+    {"rank": 5, "name": "정가상", "value_text": "410"}
+  ],
+  "duration_seconds": 8,
+  "layout": "full",
+  "output": {"width": 960, "height": 540, "fps": 30}
+}

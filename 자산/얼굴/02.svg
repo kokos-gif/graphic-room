@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- 가상 출연자 2 — 긴 머리. 실제 인물이 아니다 -->
+  <rect width="256" height="256" fill="#ff7eb6"/>
+  <path d="M40 262c-14-96-8-226 88-226s102 130 88 226z" fill="#5a3320" stroke="#0b0c0f" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M52 262c6-40 36-56 76-56s70 16 76 56z" fill="#f5f0e6" stroke="#0b0c0f" stroke-width="8" stroke-linejoin="round"/>
+  <ellipse cx="128" cy="134" rx="64" ry="74" fill="#f8d2b4" stroke="#0b0c0f" stroke-width="8"/>
+  <path d="M62 118c2-44 30-62 66-62s64 18 66 62c-22-6-42-20-56-38-16 20-44 34-76 38z" fill="#5a3320" stroke="#0b0c0f" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M94 142q10-10 20 0" fill="none" stroke="#0b0c0f" stroke-width="7" stroke-linecap="round"/>
+  <path d="M142 142q10-10 20 0" fill="none" stroke="#0b0c0f" stroke-width="7" stroke-linecap="round"/>
+  <path d="M108 172q20 18 40 0z" fill="#e5372c" stroke="#0b0c0f" stroke-width="6" stroke-linejoin="round"/>
+  <circle cx="86" cy="162" r="9" fill="#ff8f7a"/>
+  <circle cx="170" cy="162" r="9" fill="#ff8f7a"/>
+</svg>

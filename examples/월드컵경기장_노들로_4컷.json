@@ -1,0 +1,25 @@
+{
+  "program": "가상 예능 〈오늘도 출발〉 PART 02",
+  "requester": {"name": "홍길순", "role": "PD", "phone": "010-0000-0000"},
+  "text": "빨간 버스 이동(출연진 4명). 상암동 월드컵경기장 앞에서 월드컵대교 방향으로 → 컷 전환, 월드컵대교 위를 지나가는 모습 → 월드컵대교 남단 분기점에서 노들로로 진입 → 컷 전환, 노들로를 달리는 버스. 컷마다 4초, 전체 16초.",
+  "map_style": "route_move",
+  "from": {"name": "서울월드컵경기장"},
+  "to": {"name": "노들로", "lat": 37.5391, "lon": 126.8988, "bearing": 127},
+  "via": [
+    {"name": "월드컵대교", "lat": 37.5543, "lon": 126.8843, "bearing": 203},
+    {"name": "노들로 진입", "lat": 37.5437, "lon": 126.8912, "bearing": 127}
+  ],
+  "cuts": [
+    {"from": "월드컵경기장 앞", "to": "월드컵대교 방향", "from_m": 0, "to_m": 1650, "duration_seconds": 4},
+    {"from": "월드컵대교 북단", "to": "월드컵대교 남단", "from_m": 1430, "to_m": 2950, "duration_seconds": 4,
+     "bridge": {"look": "cable", "from_m": 1501, "to_m": 2879}},
+    {"from": "월드컵대교 남단", "to": "노들로 진입", "from_m": 2700, "to_m": 3650, "duration_seconds": 4},
+    {"from": "노들로", "to": "여의도 방향", "from_m": 3650, "to_m": 4450, "duration_seconds": 4, "vehicle_scale": 1.7}
+  ],
+  "vehicle": "bus",
+  "vehicle_color": "빨강",
+  "layout": "full",
+  "output": {"width": 1920, "height": 1080, "fps": 30},
+  "faces": ["자산/얼굴/01.svg", "자산/얼굴/02.svg", "자산/얼굴/03.svg", "자산/얼굴/04.svg"],
+  "face_mode": "ride"
+}

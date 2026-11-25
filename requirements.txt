@@ -1,0 +1,7 @@
+# -*- coding: utf-8 -*-
+# 실행에 필요한 파이썬 패키지.  설치:  pip install -r requirements.txt
+# (첫 줄은 예전 pip 가 이 파일을 윈도우 기본 글자표로 읽다 멈추지 않게 하는 표시다)
+# (그 밖에 영상을 뽑으려면 크롬 또는 엣지, ffmpeg 가 있어야 한다 — README 의 '실행' 참고)
+pillow>=10        # 그림 읽기 · 얼굴 그림 · 아이콘 바탕 떼기
+numpy>=1.24       # 네비 화면(mapcg/navi.py) · 출연진 시트(mapcg/facesheet.py)
+scipy>=1.10       # 출연진 시트에서 얼굴 칸 찾기 · 자르기(mapcg/facesheet.py)

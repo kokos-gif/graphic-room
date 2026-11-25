@@ -1,0 +1,2 @@
+mapcg/web/vendor/** -text
+mapcg/packs/osm/*.sqlite binary

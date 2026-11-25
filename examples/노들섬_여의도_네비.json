@@ -1,0 +1,14 @@
+{
+  "program": "가상 예능 〈오늘도 출발〉",
+  "requester": {"name": "김가상", "role": "조연출", "phone": "010-0000-0000"},
+  "text": "출연진 4명이 버스를 타고 노들섬에서 여의도로 이동하는 장면. 네비게이션처럼 남은 거리가 보이는 지도, 960*540, 8초.",
+  "map_style": "nav",
+  "from": {"name": "노들섬"},
+  "to": {"name": "여의도"},
+  "vehicle": "bus",
+  "duration_seconds": 8,
+  "layout": "full",
+  "output": {"width": 960, "height": 540, "fps": 30},
+  "faces": ["자산/얼굴/01.svg", "자산/얼굴/02.svg", "자산/얼굴/03.svg", "자산/얼굴/04.svg"],
+  "face_mode": "ride"
+}

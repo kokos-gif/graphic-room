@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>건물 안 이동 미리보기</title>
+<!--
+  건물 안 이동 — Liner 가 정한 설계도(plan.py 의 building: 층 목록 · 이동 단계 · 출연진)를 우리 화풍 부품으로 그린다.
+  그림 생성도, 모델이 만든 코드도 쓰지 않는다. 건물을 옆에서 자른 모습:
+    층 띠(아래층부터) · 땅 위/아래 · 넓은 아래층(wide)과 좁은 위층 · 주차장의 차 · 계단(지그재그) · 엘리베이터 통로와 칸 · 목표층(노란 판)
+    출연진 표지(이름 또는 사람 모양)가 단계대로 걷고 · 계단을 오르고 · 엘리베이터를 타고 목표층에 닿는다. 엘리베이터 칸에는 지나는 층이 뜬다
+  색·글꼴·종이·마감은 디자인 기준 묶음(boardskin.js)과 화풍 파일을 따른다.
+-->
+<style>
+  html,body{margin:0;height:100%;background:#15171b;overflow:hidden}
+  body.bare{background:transparent}
+  #c{position:absolute;left:0;top:0;transform-origin:0 0}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="stage.js"></script>
+<script src="job.js"></script>
+<script src="brush.js"></script>
+<script src="boardskin.js"></script>
+<script>
+"use strict";
+const J = window.JOB, SK = window.BOARDSKIN;
+const ST = Stage(J, SK), { X, PW, PH, U, SAFE } = ST, DUR = J.duration_seconds;
+const B = Brush(X, SK);
+const clamp01 = v => Math.max(0, Math.min(1, v)), ease = p => p * p * (3 - 2 * p), easeOut = t => 1 - Math.pow(1 - clamp01(t), 3);
+const back = t => { t = clamp01(t); const s = 1.7; return 1 + (s + 1) * Math.pow(t - 1, 3) + s * Math.pow(t - 1, 2); };
+const WHITE = '#ffffff', INK = SK.ink, YEL = SK.yel || '#ffcf3f';
+const TEAM = Object.assign({ red: '#e8503a', blue: '#3a78d8', green: '#3fae6a', purple: '#8a5cd8', orange: '#f08a3a', aqua: '#2fb3c0' }, SK.team || {});
+const PEOPLE = [TEAM.red, TEAM.blue, TEAM.green, TEAM.purple, TEAM.orange, TEAM.aqua];
+
+ST.ready.then(() => {
+const ISSUES = [];
+const F = J.floors, N = F.length, STEPS = J.steps, MEN = J.people && J.people.length ? J.people : [{ name: '' }];
+const idx = label => Math.max(0, F.findIndex(f => f.label === label));
+const under = f => /^(B\s*\d|지하)/i.test(f.label);
+const GI = Math.max(0, F.findIndex(f => !under(f)));            // 땅 위 첫 층
+// ---------- 자리 잡기 ----------
+const TITLE = J.title ? { px: 34 * U } : null;
+const TOP = Math.max(SAFE.t, 14 * U) + (TITLE ? 80 * U : 16 * U) + 44 * U, BOT = Math.max(SAFE.b, 14 * U) + 10 * U;
+const FH = Math.min(46 * U, (PH - TOP - BOT) / N), BY = PH - BOT - Math.max(0, (PH - TOP - BOT - N * FH) * 0.35);
+const fy = i => BY - (i + 1) * FH, foot = i => BY - i * FH - 3 * U, GY = BY - GI * FH;      // 층의 위쪽 선 · 그 층의 바닥(사람이 서는 곳) · 땅
+const CX = PW / 2, WT = Math.min(PW * 0.3, 420 * U), WP = Math.min(PW * 0.5, 680 * U);
+const TX1 = CX + WT * 0.62, TX0 = TX1 - WT, PX0 = TX1 - WP, PX1 = TX1;      // 좁은 위층(오른쪽에 붙음) · 넓은 아래층(왼쪽으로 넓다)
+const anyWide = F.some(f => f.wide && !under(f));
+const span = f => under(f) ? [PX0 - 34 * U, PX1 + 54 * U] : f.wide || !anyWide ? [PX0, PX1] : [TX0, TX1];
+const EX = TX0 + WT * 0.66, EW = 40 * U;                         // 엘리베이터 통로
+const SX = PX0 + (PX1 - PX0) * 0.36, SW = 74 * U;                 // 계단(오르는 칸)
+const UR = Math.min(PW, PH) / 540;      // 읽히는 크기의 기준 단위(순위판 · 정보판과 같다)
+const LPX = Math.min(24 * U, Math.max(FH * 0.5, (SK.minText || 0) * UR));      // 층 이름: 화풍의 가장 작은 글자 기준 이상
+if (PX0 - 34 * U < SAFE.l || PX1 + 54 * U > PW - SAFE.r || fy(N - 1) < SAFE.t) ISSUES.push('안전 영역 밖으로 나감: 건물');
+if (SK.minText && LPX < SK.minText * UR - .01) ISSUES.push(`층 이름 글자가 작음(층이 ${N}개)`);
+if (TITLE) {      // 제목은 판에 들어갈 때까지 글자를 줄인다(titlePlate) — 많이 줄거나 읽히는 크기 밑으로 가면 검수판에 적는다
+  X.font = `900 ${TITLE.px}px ${SK.font}`;
+  const full = X.measureText(J.title).width, room = PW - 2 * Math.max(SAFE.l, 30 * U) - 40 * U, k = Math.min(1, room / full);
+  if (k < 0.75) ISSUES.push(`제목을 ${Math.round((1 - k) * 100)}% 줄여야 들어감: ${J.title}`);
+  if (SK.minText && TITLE.px * k < SK.minText * UR - .01) ISSUES.push(`글자가 작음(${Math.round(TITLE.px * k / UR)} · 기준 ${SK.minText} 이상): ${J.title}`);
+}
+if (SK.fontCheck && !SK.fontCheck()) ISSUES.push('같이 실은 글꼴을 불러오지 못함 — 이 컴퓨터의 다른 글꼴로 그려졌습니다');
+
+// ---------- 길: 단계를 점의 줄로(구간마다 종류와 빠르기) ----------
+const PARK = F.findIndex(f => f.kind === 'parking'), CAR = PARK >= 0 ? span(F[PARK])[0] + 150 * U : null;      // 층 이름을 가리지 않게
+const path = [];      // {x, y, how, fi(층 번호), k(몇째 단계)}
+let K = 0;
+let cur = idx(STEPS[0].floor), x = PARK === cur && CAR ? CAR + 64 * U : span(F[cur])[0] + 90 * U;
+path.push({ x, y: foot(cur), how: 'start', fi: cur, k: 0 });
+const go = (nx, ny, how, fi) => { path.push({ x: nx, y: ny, how, fi, k: K }); x = nx; };
+STEPS.slice(1).forEach((s, k) => {
+  K = k + 1;
+  const to = idx(s.floor), next = STEPS[k + 2];
+  if (s.how === 'stairs' || s.how === 'escalator') {
+    go(SX, foot(cur), 'walk', cur);
+    const dir = to >= cur ? 1 : -1;
+    for (let i = cur, n = 0; i !== to; i += dir, n++) {
+      const x0 = n % 2 ? SX + SW : SX, x1 = n % 2 ? SX : SX + SW;
+      if (Math.abs(x - x0) > 1) go(x0, foot(i), 'walk', i);
+      go(x1, foot(i + dir), s.how, i + dir);
+    }
+  } else if (s.how === 'elevator') {
+    if (Math.abs(x - EX) > 1) go(EX, foot(cur), 'walk', cur);
+    path.push({ x: EX, y: foot(cur), how: 'door', fi: cur, k: K });     // 문 앞에서 잠깐 선다
+    go(EX, foot(to), 'elevator', to);
+  } else {
+    const nx = next && next.how === 'elevator' ? EX : next && (next.how === 'stairs' || next.how === 'escalator') ? SX : Math.min(span(F[to])[1] - 70 * U, x + 160 * U);
+    go(nx, foot(to), 'walk', to);
+  }
+  cur = to;
+});
+const last = path[path.length - 1];
+if (last.how === 'elevator') go(Math.min(span(F[cur])[1] - 60 * U, EX + 70 * U), last.y, 'walk', cur);      // 목표층에서 칸 밖으로 나온다
+// 구간마다 걸리는 시간의 무게: 걷기 1, 계단 0.65 배 빠르기, 엘리베이터 1.9 배 빠르기, 문 앞 0.3초
+const SPEED = { walk: 1, stairs: 0.65, escalator: 0.9, elevator: 1.9 };
+const segs = [];
+for (let i = 1; i < path.length; i++) {
+  const a = path[i - 1], b = path[i], len = Math.hypot(b.x - a.x, b.y - a.y);
+  segs.push({ a, b, how: b.how, w: b.how === 'door' ? 0 : len / (SPEED[b.how] || 1) });
+}
+const T_IN = Math.min(0.7, DUR * 0.1), T_OUT = Math.min(1.0, DUR * 0.13), PAUSE = segs.some(s => s.how === 'door') ? Math.min(0.35, DUR * 0.05) : 0;
+const MOVE = Math.max(0.5, DUR - T_IN - T_OUT - PAUSE), WSUM = segs.reduce((s, g) => s + g.w, 0) || 1;
+let tt = T_IN;
+segs.forEach(g => { g.t0 = tt; g.t1 = tt + (g.how === 'door' ? PAUSE : MOVE * g.w / WSUM); tt = g.t1; });
+function where(t) {     // 그 시각의 자리와 그 구간
+  const p = ease(clamp01((t - T_IN) / (tt - T_IN))) * (tt - T_IN) + T_IN;      // 처음과 끝만 부드럽게
+  for (const g of segs) if (p <= g.t1) { const f = g.t1 > g.t0 ? clamp01((p - g.t0) / (g.t1 - g.t0)) : 1; return { x: g.a.x + (g.b.x - g.a.x) * f, y: g.a.y + (g.b.y - g.a.y) * f, g, f }; }
+  const g = segs[segs.length - 1]; return { x: g.b.x, y: g.b.y, g, f: 1 };
+}
+const ELV = segs.filter(g => g.how === 'elevator');
+const E0 = ELV.length ? Math.min(...ELV.map(g => Math.min(g.a.fi ?? 0, g.b.fi))) : -1, E1 = ELV.length ? Math.max(...ELV.map(g => g.b.fi)) : -1;
+const GOAL = F.findIndex(f => f.kind === 'goal') >= 0 ? F.findIndex(f => f.kind === 'goal') : last.fi;
+
+// ---------- 한 번만 그려 두는 것: 하늘·땅·구름·나무 ----------
+const SCENE = (() => {
+  const e = B.mk(PW, PH), g = e.getContext('2d');
+  g.fillStyle = SK.bg || '#fff6e6'; g.fillRect(0, 0, PW, PH);
+  const sky = g.createLinearGradient(0, 0, 0, GY); sky.addColorStop(0, 'rgba(150,200,255,.35)'); sky.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = sky; g.fillRect(0, 0, PW, GY);
+  g.fillStyle = '#e9d9bf'; g.fillRect(0, GY, PW, PH - GY);                     // 땅속
+  B.on(g, () => {
+    B.art(B.rrd(-20 * U, GY - 5 * U, PW + 40 * U, 12 * U, 4 * U), { fill: TEAM.green || '#62d6a4', scale: U, lw: 2.4 * U, seed: 3, pool: 0 });      // 잔디 띠
+    [[0.13, 0.22, 1], [0.84, 0.3, .8], [0.7, 0.14, .6]].forEach(([fx, fy2, k], i) => {        // 구름: 둥근 덩어리 셋
+      const cx = PW * fx, cy = Math.max(TOP + 10 * U, PH * fy2), r = 26 * U * k;
+      const d = `M${cx - 2.4 * r} ${cy + r * .6} Q${cx - 2.6 * r} ${cy - .2 * r} ${cx - 1.5 * r} ${cy - .1 * r} Q${cx - 1.2 * r} ${cy - 1.2 * r} ${cx - .1 * r} ${cy - .8 * r} Q${cx + .6 * r} ${cy - 1.6 * r} ${cx + 1.4 * r} ${cy - .5 * r} Q${cx + 2.6 * r} ${cy - .4 * r} ${cx + 2.4 * r} ${cy + .6 * r} Z`;
+      B.art(d, { fill: WHITE, tex: 'paper', lw: 2.2 * U, seed: 10 + i, drop: 2 * U, pool: 0 });
+    });
+    const tx = Math.min(PW - Math.max(SAFE.r, 30 * U) - 90 * U, PX1 + 210 * U);
+    [0, 1].forEach(i => { const x0 = tx + i * 62 * U;                         // 나무 둘: 막대 위 동그라미
+      g.fillStyle = INK; g.fillRect(x0 - 2 * U, GY - 34 * U, 4 * U, 30 * U);
+      B.art(B.ell(x0, GY - 50 * U, 19 * U, 24 * U), { fill: TEAM.green || '#62d6a4', tex: 'paint', lw: 2.4 * U, seed: 20 + i, pool: 2 * U }); });
+  });
+  return e;
+})();
+const WASH = B.wash(PW, PH, 12, U), GRAIN = B.grain(PW, PH, 3, U);
+
+// ---------- 그리는 것 ----------
+function floors(t) {
+  for (let i = 0; i < N; i++) {
+    const a = clamp01((t - i * 0.04) / 0.35); if (a <= 0) continue;
+    const f = F[i], [x0, x1] = span(f), y = fy(i), goal = i === GOAL, arrived = goal && t >= tt;
+    X.save(); X.globalAlpha = clamp01(a * 2); X.translate(0, (1 - easeOut(a)) * 14 * U);
+    B.art(B.rrd(x0, y, x1 - x0, FH, 3 * U), { fill: goal ? YEL : under(f) ? '#d9cbb4' : SK.paper, tex: goal ? 'paint' : 'paper', scale: U, lw: 2.4 * U, seed: 100 + i, pool: 2 * U });
+    if (!under(f) && !goal) {      // 창: 층마다 같은 간격의 작은 칸
+      X.fillStyle = 'rgba(108,150,242,.28)';
+      for (let wx = x0 + 70 * U; wx < x1 - 30 * U; wx += 46 * U) if (Math.abs(wx - EX) > EW && Math.abs(wx - SX - SW / 2) > SW * 0.7) X.fillRect(wx, y + FH * 0.28, 24 * U, FH * 0.44);
+    }
+    B.text(f.label, x0 + 12 * U, y + FH / 2 + LPX * 0.36, LPX, { color: goal ? INK : under(f) ? '#5a4a3a' : INK, maxW: 120 * U });
+    if (arrived) {                 // 닿으면 목표층이 한 번 크게 숨 쉰다
+      const p = clamp01((t - tt) / 0.5); X.globalAlpha = (1 - p) * 0.8;
+      X.strokeStyle = YEL; X.lineWidth = 6 * U * (1 - p) + 2 * U; X.strokeRect(x0 - 8 * U * p, y - 8 * U * p, x1 - x0 + 16 * U * p, FH + 16 * U * p);
+    }
+    X.restore();
+  }
+}
+const BUILT = N * 0.04 + 0.35;      // 층이 다 나온 시각 — 통로·계단·차는 그 뒤에 나온다
+function shaft(t) {
+  if (E0 < 0) return;
+  const y0 = fy(E1), y1 = BY - E0 * FH;
+  X.save(); X.globalAlpha = clamp01((t - BUILT * 0.6) / 0.3); X.fillStyle = 'rgba(43,39,86,.14)'; X.fillRect(EX - EW / 2, y0, EW, y1 - y0);
+  X.strokeStyle = INK; X.lineWidth = 1.6 * U; X.setLineDash([5 * U, 5 * U]);
+  X.beginPath(); X.moveTo(EX - EW / 2, y0); X.lineTo(EX - EW / 2, y1); X.moveTo(EX + EW / 2, y0); X.lineTo(EX + EW / 2, y1); X.stroke(); X.restore();
+}
+function stairs(t) {
+  const done = new Set(), a = clamp01((t - BUILT * 0.6) / 0.3); if (a <= 0) return;
+  X.save(); X.globalAlpha = a;
+  segs.forEach(g => { if (g.how !== 'stairs' && g.how !== 'escalator') return; const k = `${g.a.x},${g.a.y}`; if (done.has(k)) return; done.add(k);
+    const n = 7, pts = [[g.a.x, g.a.y]];
+    if (g.how === 'stairs') for (let i = 1; i <= n; i++) { const fx = g.a.x + (g.b.x - g.a.x) * i / n, fy2 = g.a.y + (g.b.y - g.a.y) * i / n;
+      pts.push([fx, g.a.y + (g.b.y - g.a.y) * (i - 1) / n]); pts.push([fx, fy2]); }
+    else pts.push([g.b.x, g.b.y]);
+    B.ink(pts, 3.4 * U, INK, 70 + done.size, { taper: 0, wob: .2 }); });
+  X.restore();
+}
+function car() {
+  if (CAR == null) return;
+  const y = foot(PARK) + 1 * U, s = U * 1.5;
+  X.save(); X.translate(CAR, y); X.scale(s, s);
+  X.fillStyle = 'rgba(0,0,0,.18)'; X.beginPath(); X.ellipse(0, 1, 26, 4.5, 0, 0, 7); X.fill();
+  B.art('M-24 -6 L-24 -14 Q-24 -17 -20 -17 L-14 -17 L-8 -26 L9 -26 L15 -17 L20 -16 Q25 -15 25 -11 L25 -6 Z', { fill: TEAM.blue, lw: 2.6, seed: 35, shade: 2, pool: 3 });
+  B.art('M-9 -17 L-5.5 -23 L7 -23 L11 -17 Z', { fill: '#e3f4ff', tex: null, lw: 1.6, seed: 36, pool: 0 });
+  [[-14, -5], [14, -5]].forEach(([wx, wy], i) => B.art(B.ell(wx, wy, 5.5, 5.5), { fill: INK, tex: null, lw: 2, seed: 33 + i, pool: 0 }));
+  X.restore();
+}
+function cab(t, here) {       // 엘리베이터 칸: 타기 전엔 출발층, 타는 동안 사람과 같이, 내린 뒤엔 목표층. 칸 위에 지나는 층
+  if (E0 < 0) return;
+  const g = here.g, riding = g.how === 'elevator', before = here.g.t1 <= (ELV[0].t0 + 1e-6) && !riding;
+  const y = riding ? here.y : before ? foot(ELV[0].a.fi) : foot(ELV[ELV.length - 1].b.fi);
+  const h = FH * 0.86, w = EW - 6 * U;
+  B.art(B.rrd(EX - w / 2, y - h, w, h, 4 * U), { fill: SK.paper, tex: 'paper', scale: U, lw: 2.6 * U, seed: 90, drop: 2 * U, pool: 0 });
+  if (riding || (!before && t < tt + 0.6)) {
+    const fi = Math.max(0, Math.min(N - 1, Math.floor((BY - y + FH * 0.5) / FH))), s = '▲ ' + F[fi].label;
+    const px = Math.max(17 * U, (SK.minText || 0) * UR); X.font = `900 ${px}px ${SK.font}`; const tw = X.measureText(s).width + 20 * U;
+    B.art(B.rrd(EX + EW / 2 + 8 * U, y - h - 4 * U, tw, px + 14 * U, 8 * U), { fill: INK, scale: U, lw: 0, seed: 91, pool: 0 });
+    B.text(s, EX + EW / 2 + 8 * U + tw / 2, y - h - 4 * U + (px + 14 * U) / 2 + px * 0.36, px, { align: 'center', color: WHITE });
+  }
+}
+function person(i, x, y, t, moving) {
+  const m = MEN[i], col = PEOPLE[i % PEOPLE.length], hop = moving ? Math.abs(Math.sin(t * 8.5 + i)) * 3.4 : 0, name = String(m.name || '').trim();
+  X.save(); X.translate(x, y); X.scale(U * 1.25, U * 1.25);
+  X.fillStyle = 'rgba(0,0,0,.18)'; X.beginPath(); X.ellipse(0, 1, 10 - hop * .7, 3.6, 0, 0, 7); X.fill();
+  X.translate(0, -hop);
+  X.font = `900 18px ${SK.font}`; const tw = name ? X.measureText(name).width : 0, H = 34, W = Math.max(H, tw + 22), top = -H - 12;
+  B.art(`M-7 ${top + H - 4} L0 -3 L7 ${top + H - 4} Z`, { fill: col, lw: 2.4, seed: 52 + i, pool: 0 });
+  B.art(B.rrd(-W / 2, top, W, H, H / 2), { fill: col, tex: 'paint', lw: 2.8, seed: 53 + i, drop: 2.5, shade: 2, pool: 2 });
+  const cy = top + H / 2;
+  if (name) { X.textAlign = 'center'; X.textBaseline = 'middle'; X.lineJoin = 'round'; X.lineWidth = 4.5; X.strokeStyle = INK; X.strokeText(name, 0, cy + 1); X.fillStyle = WHITE; X.fillText(name, 0, cy + 1); }
+  else { X.fillStyle = WHITE; X.strokeStyle = INK; X.lineWidth = 2.2;
+    X.beginPath(); X.arc(0, cy - 5, 5.2, 0, 7); X.fill(); X.stroke();
+    X.beginPath(); X.moveTo(-8.5, cy + 11); X.quadraticCurveTo(-8.5, cy + 1.5, 0, cy + 1.5); X.quadraticCurveTo(8.5, cy + 1.5, 8.5, cy + 11); X.closePath(); X.fill(); X.stroke(); }
+  X.restore();
+}
+// 단계의 말(주차 · 이동 · 엘베 …): 그 단계가 시작될 때 건물 오른쪽 밖, 그 단계가 가는 층의 높이에 뜬다(사람 표지와 겹치지 않게)
+const used = {};      // 층마다 이미 놓은 꼬리표의 오른쪽 끝(같은 층의 꼬리표는 옆으로 잇는다)
+const TAGS = STEPS.map((s, k) => {
+  if (!s.caption) return null;
+  const g = k === 0 ? null : segs.find(q => q.b.k === k), fi = k === 0 ? path[0].fi : idx(s.floor);
+  const px = Math.max(17 * U, (SK.minText || 0) * UR); X.font = `900 ${px}px ${SK.font}`;
+  const w = X.measureText(s.caption).width + 24 * U, h = px + 16 * U, bx = used[fi] || span(F[fi])[1] + 14 * U, by = fy(fi) + FH / 2 - h / 2;
+  used[fi] = bx + w + 8 * U;
+  if (bx + w > PW - SAFE.r + .5) ISSUES.push(`안전 영역 밖으로 나감: 단계의 말 '${s.caption}'`);
+  return { s, px, w, h, bx, by, start: g ? g.t0 : 0.15 };
+});
+function tags(t) {
+  TAGS.forEach((o, k) => {
+    if (!o) return;
+    const a = clamp01((t - o.start) / 0.3); if (a <= 0) return;
+    const { s, px, w, h, bx, by } = o;
+    X.save(); X.globalAlpha = clamp01(a * 2); X.translate(bx + w / 2, by + h / 2); const k2 = back(a); X.scale(k2, k2);
+    B.art(B.rrd(-w / 2, -h / 2, w, h, h / 2), { fill: WHITE, tex: 'paper', scale: U, lw: 2.4 * U, seed: 200 + k, drop: 2.5 * U, pool: 0 });
+    B.text(s.caption, 0, px * 0.36, px, { align: 'center', color: INK });
+    X.restore();
+  });
+}
+function titlePlate(t) {
+  if (!TITLE) return;
+  const a = clamp01(t / 0.45); if (a <= 0) return;
+  X.font = `900 ${TITLE.px}px ${SK.font}`; const w = Math.min(PW - 2 * Math.max(SAFE.l, 30 * U), X.measureText(J.title).width + 56 * U), h = TITLE.px + 28 * U, cy = Math.max(SAFE.t, 14 * U) + h / 2 + 6 * U;
+  const P = (SK.title && SK.title.plate) || { fill: INK, color: WHITE, line: WHITE };
+  X.save(); X.translate(CX, cy); const s = back(a); X.scale(s, s);
+  const d = B.rrd(-w / 2, -h / 2, w, h, 14 * U);
+  B.paint(d, { fill: P.fill, tex: 'paint', scale: U, drop: 4 * U, pool: 0 }); if (P.line) B.outline(d, 3 * U, P.line, 301);
+  B.text(J.title, 0, TITLE.px * 0.36, TITLE.px, { align: 'center', color: P.color, maxW: w - 40 * U });
+  X.restore();
+}
+
+function content(t) {
+  B.boil = 0;
+  X.drawImage(SCENE, 0, 0);
+  floors(t); shaft(t); stairs(t); car();
+  const here = where(t), moving = t > T_IN && t < tt && here.g.how !== 'door';
+  cab(t, here);
+  tags(t);
+  B.boil = Math.floor(t * 6);
+  const n = MEN.length, gap = here.g.how === 'elevator' || (here.g.how === 'door' && here.f > 0.5) ? 9 * U : 30 * U;      // 엘리베이터 안에서는 붙어 선다
+  MEN.forEach((_, i) => person(i, here.x + (i - (n - 1) / 2) * gap, here.y, t, moving));
+  B.boil = 0;
+  titlePlate(t);
+  X.save(); X.globalCompositeOperation = 'soft-light';
+  if (SK.finish && SK.finish.wash) { X.globalAlpha = SK.finish.wash; X.drawImage(WASH, 0, 0); }
+  if (SK.finish && SK.finish.grain) { X.globalAlpha = SK.finish.grain; X.drawImage(GRAIN, 0, 0); }
+  X.restore();
+}
+if (tt > ST.LAST + 1e-6) ISSUES.push('영상이 짧아 목표층에 닿기 전에 끝납니다');
+ST.run(content, null, () => [...new Set(ISSUES)]);
+});
+</script>
+</body>
+</html>

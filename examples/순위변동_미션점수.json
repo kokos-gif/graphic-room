@@ -1,0 +1,34 @@
+{
+  "kind": "rank_board",
+  "program": "가상 예능 〈오늘도 출발〉",
+  "requester": {"name": "김가상", "role": "PD", "phone": "010-0000-0000"},
+  "text": "1차 미션 출연자 점수 순위판(줄은 옆에서 들어옴) → 2차 미션 점수로 바뀌면서 카드 위치 이동. 박러너는 2차에서 탈락(기권).",
+  "title": "1차 미션 출연자 점수",
+  "unit": "점",
+  "icon": "A04",
+  "order": "input",
+  "rows": [
+    {"rank": 1, "name": "김선수", "value_text": "1230"},
+    {"rank": 2, "name": "박선수", "value_text": "1120"},
+    {"rank": 3, "name": "최선수", "value_text": "980"},
+    {"rank": 4, "name": "정선수", "value_text": "942"},
+    {"rank": 5, "name": "이선수", "value_text": "800"},
+    {"rank": 6, "name": "최러너", "value_text": "714"},
+    {"rank": 7, "name": "박러너", "value_text": "692"}
+  ],
+  "next": {
+    "title": "2차 미션 출연자 점수",
+    "rows": [
+      {"rank": 1, "name": "박선수", "value_text": "1300"},
+      {"rank": 2, "name": "김선수", "value_text": "1250"},
+      {"rank": 3, "name": "최선수", "value_text": "1100"},
+      {"rank": 4, "name": "최러너", "value_text": "980"},
+      {"rank": 5, "name": "정선수", "value_text": "970"},
+      {"rank": 6, "name": "이선수", "value_text": "940"},
+      {"rank": 7, "name": "박러너", "value_text": "탈락 · 기권", "out": true}
+    ]
+  },
+  "duration_seconds": 12,
+  "layout": "full",
+  "output": {"width": 1920, "height": 1080, "fps": 30}
+}

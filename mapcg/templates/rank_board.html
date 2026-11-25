@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>순위판 미리보기</title>
+<!--
+  순위판 — 표(순위·이름·값)를 받아 코드로 그린다. 그림 생성은 쓰지 않는다.
+  값은 받은 글자 그대로 적는다(쉼표·소수점·단위를 고치지 않는다). 숫자로 바꾼 값은 막대 길이에만 쓴다.
+  순위는 여기서 매기지 않는다 — 작업 폴더를 만들 때(board.py) 정해져서 온다.
+  그리는 도구는 작가 도구(brush.js), 색·글꼴은 디자인 기준 묶음(boardskin.js), 보기 방식·재생·내보내기는 무대(stage.js).
+  화풍이 기준 묶음에 더 줄 수 있는 것(없으면 V1 그대로):
+    safe            안전 영역(프레임 대비 비율) — 글자가 든 것은 전부 그 안에 놓는다
+    row             { pitch, px, medal } 줄 간격·글자·메달의 가장 큰 크기(540 눈금)
+    minText         가장 작은 글자의 아래 한계(540 눈금). 그보다 작아지면 검수판에 적힌다
+    title.plate     { fill, color, line } 제목을 판 하나에 글자 한 겹으로
+    backdrop(env)   배경판을 화풍이 직접 그린다      overlay(env)   줄 위에 얹는 한 겹(반짝이 등)
+    fontCheck()     같이 실은 글꼴이 불러와졌는지
+-->
+<style>
+  html,body{margin:0;height:100%;background:#15171b;overflow:hidden}
+  body.bare{background:transparent}
+  #c{position:absolute;left:0;top:0;transform-origin:0 0}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="stage.js"></script>
+<script src="job.js"></script>
+<script src="brush.js"></script>
+<script src="boardskin.js"></script>
+<script>
+"use strict";
+const J = window.JOB, SK = window.BOARDSKIN;
+const ST = Stage(J, SK), { X, PW, PH, U, SAFE } = ST, DUR = J.duration_seconds;      // X = 그릴 캔버스, PW×PH = 그래픽 자리, U = 굵기·글자 단위
+const B = Brush(X, SK);
+const clamp01 = v => Math.max(0, Math.min(1, v)), easeOut = t => 1 - Math.pow(1 - clamp01(t), 3);
+const back = t => { t = clamp01(t); const s = 1.7; return 1 + (s + 1) * Math.pow(t - 1, 3) + s * Math.pow(t - 1, 2); };
+const at = (t, start, len = 0.4) => len > 0 ? clamp01((t - start) / len) : +(t >= start);          // start 초에 시작해 len 초 동안 0→1(len 이 0 이면 바로 1)
+
+// 글자 너비를 재서 자리를 잡는다. 그래서 글꼴이 다 불러와진 뒤에 시작한다(화풍이 글꼴을 따로 싣는 경우)
+ST.ready.then(() => {
+const ROWS = J.rows, N = ROWS.length;
+// 순위 변동판(J.next): 같은 줄들이 다음 순위의 자리로 옮겨 간다. NROW[i] = i번째 줄의 다음 내용, NSLOT[i] = 옮겨 갈 자리
+const NEXT = J.next || null, NROW = NEXT ? ROWS.map(r => NEXT.rows.find(n => n.id === r.id)) : null, NSLOT = NEXT ? ROWS.map(r => NEXT.rows.findIndex(n => n.id === r.id)) : null;
+const ALLR = NEXT ? [...ROWS, ...NEXT.rows] : ROWS;        // 자리와 막대의 기준은 두 순위를 통틀어 잡는다(넘어갈 때 크기가 튀지 않게)
+const TOPV = Math.max(0, ...ALLR.map(r => r.value ?? 0));
+const ISSUES = [];      // 자동 검사에 걸린 것(검수판 아래에 적힌다)
+
+// ---------- 자리 잡기: 줄이 많으면 두 단으로 나눈다 ----------
+const BIG = SK.row || {}, DECO = SK.title || {};
+// U 는 자리의 높이로 정한 단위라, 세로로 긴 화면에서는 가로 여백이 화면 폭에 비해 너무 커진다. 가로로 쓰는 여백은 폭에 맞춰 줄인다(가로 16:9 에서는 1)
+const UX = U * Math.min(1, PW / (960 * U));
+const MX = Math.max(64 * UX, SAFE.l + 14 * UX, SAFE.r + 14 * UX), HEAD = 128 * U, FOOT = Math.max(26 * U, SAFE.b + 8 * U), GAPX = 34 * UX, TITLE_PX = 46 * U;
+const PAD = 18 * UX;                                                                  // 띠 안쪽 여백
+// 단 수에 따른 자리. 메달·이름·값을 놓고 남는 폭(ROOM)까지 여기서 셈한다
+const plan = COLS => {
+  const PER = Math.ceil(N / COLS), COLW = (PW - 2 * MX - (COLS - 1) * GAPX) / COLS;
+  const PITCH = Math.min((BIG.pitch || 68) * U, (PH - FOOT - HEAD) / PER), SH = PITCH - 10 * U;      // 줄 간격 · 종이 띠의 높이
+  const BR = Math.min(SH * 0.5, (BIG.medal || 26) * U);                               // 순위 메달 반지름
+  const STRIP0 = BR * 2 + 14 * UX, STRIPW = COLW - STRIP0;                            // 띠가 시작하는 곳(단의 왼쪽 끝에서) · 띠의 너비
+  const PX = Math.min((BIG.px || 27) * U, SH * 0.52);                                 // 이름·값 글자 크기
+  // 이름과 값은 띠 안의 너비(ROOM)를 나눠 쓴다. 이름은 많아야 42%, 값은 그 나머지 안에서만 — 길면 서로 겹치지 않고 글자가 줄어든다
+  return { COLS, PER, COLW, PITCH, SH, BR, STRIP0, STRIPW, PX, ROOM: STRIPW - 2 * PAD - 16 * UX };
+};
+// 줄이 많으면 두 단. 다만 두 단으로 나눴을 때 글자 놓을 폭이 글자 다섯 자만큼도 안 되면(세로로 긴 화면) 한 단으로 둔다
+const TWO = N > 6 && J.columns !== 1 ? plan(2) : null;
+const { COLS, PER, COLW, PITCH, SH, BR, STRIP0, STRIPW, PX, ROOM } = TWO && TWO.ROOM >= TWO.PX * 5 ? TWO : plan(1);
+const TOP = HEAD + (PH - FOOT - HEAD - (PER * PITCH - 10 * U)) * 0.4;                 // 줄이 적으면 남는 자리를 위아래로 나눈다
+const width = (s, px) => { X.font = `900 ${px}px ${SK.font}`; return X.measureText(s).width; };
+const fit = (s, px, room) => { let p = px; while (width(s, p) > room && p > 8) p -= 1; return { px: p, w: width(s, p) }; };      // 들어갈 때까지 줄인 크기(B.text 와 같은 방식)
+if (STRIPW <= 0 || ROOM <= 0) ISSUES.push('화면이 좁아 줄을 놓을 자리가 없음 — 줄 수를 줄이거나 화면을 넓혀 주세요');
+const NAME_W = Math.min(Math.max(...ALLR.map(r => width(r.name, PX))), ROOM * 0.42);
+const VAL_W = Math.min(Math.max(...ALLR.map(r => width(r.show, PX))), ROOM - NAME_W);
+const BAR0 = STRIP0 + PAD + NAME_W + 16 * UX, BARW = ROOM - NAME_W - VAL_W - 14 * UX;   // 막대가 시작하는 곳 · 가장 긴 막대의 길이
+const BARS = TOPV > 0 && BARW >= 50 * U;
+// 제목 자리. 판에 올리는 화풍이면 판의 크기까지 여기서 정한다(글자가 든 상자 TBOX 는 안전 영역 검사에 쓴다)
+const LONG = NEXT && width(NEXT.title, TITLE_PX) > width(J.title, TITLE_PX) ? NEXT.title : J.title;      // 두 제목 가운데 긴 쪽에 자리를 맞춘다
+const TFIT = fit(LONG, TITLE_PX, PW - 2 * MX - (DECO.plate ? 56 * U : 0));
+const TPLATE = DECO.plate ? { w: TFIT.w + 56 * U, h: TFIT.px + 28 * U, cy: Math.max(26 * U, SAFE.t + 6 * U) + (TFIT.px + 28 * U) / 2 } : null;
+const TBOX = TPLATE ? [PW / 2 - TPLATE.w / 2, TPLATE.cy - TPLATE.h / 2, PW / 2 + TPLATE.w / 2, TPLATE.cy + TPLATE.h / 2] : [PW / 2 - TFIT.w / 2, 80 * U - TFIT.px, PW / 2 + TFIT.w / 2, 80 * U + 28 * U];
+// 자동 검사: 글자를 많이 줄여야 들어가는 것, 막대 자리가 없는 것
+const shrunk = (s, px, room) => Math.round((1 - Math.min(1, room / width(s, px))) * 100);
+if (shrunk(LONG, TITLE_PX, PW - 2 * MX) > 25) ISSUES.push(`제목을 ${shrunk(LONG, TITLE_PX, PW - 2 * MX)}% 줄여야 들어감: ${LONG}`);
+ROWS.forEach(r => { if (shrunk(r.name, PX, NAME_W) > 25) ISSUES.push(`이름을 ${shrunk(r.name, PX, NAME_W)}% 줄여야 들어감: ${r.name}`); });
+ALLR.forEach(r => { if (shrunk(r.show, PX, VAL_W) > 25) ISSUES.push(`값을 ${shrunk(r.show, PX, VAL_W)}% 줄여야 들어감: ${r.name} — ${r.show}`); });
+if (TOPV > 0 && !BARS) ISSUES.push('이름과 값이 길어 막대를 그릴 자리가 없음 — 막대 없이 글자만 나옵니다');
+// 화풍이 줄 때만 하는 검사: 가장 작은 글자, 안전 영역, 같이 실은 글꼴
+if (SK.minText) {
+  const UR = Math.min(PW, PH) / 540;      // 읽히는 크기의 기준 단위: 화면의 짧은 변(세로 화면에서는 폭이 기준이다)
+  const small = [[LONG, TFIT.px], ...ROWS.map(r => [r.name, fit(r.name, PX, NAME_W).px]), ...ALLR.map(r => [r.show, fit(r.show, PX, VAL_W).px])].filter(([, px]) => px < SK.minText * UR - .01);
+  small.forEach(([s, px]) => ISSUES.push(`글자가 작음(${Math.round(px / UR)} · 기준 ${SK.minText} 이상): ${s}`));
+}
+if (SK.safe) {
+  const rows = [MX, TOP, PW - MX, TOP + (PER - 1) * PITCH + SH];
+  [['제목', TBOX], ['순위 줄', rows]].forEach(([name, [x0, y0, x1, y1]]) => {
+    if (x0 < SAFE.l - .5 || y0 < SAFE.t - .5 || x1 > PW - SAFE.r + .5 || y1 > PH - SAFE.b + .5) ISSUES.push(`안전 영역 밖으로 나감: ${name}`); });
+}
+if (SK.fontCheck && !SK.fontCheck()) ISSUES.push('같이 실은 글꼴을 불러오지 못함 — 이 컴퓨터의 다른 글꼴로 그려졌습니다');
+
+// ---------- 시간: 아래 순위부터 한 줄씩 나오고 1위가 마지막에 나온다 ----------
+// 영상이 아무리 짧아도 마지막 화면에는 모든 줄이 다 나와 있어야 한다. 그래서 정해진 초가 아니라 영상 길이에 맞춘다:
+// 모든 줄이 REVEAL 초까지 다 나오고, 그 뒤는 보여 주는 시간이다.
+const ROW_TIME = 0.87;                                           // 한 줄이 다 나오는 데 드는 시간(들어옴 → 막대 → 값), 여유 있을 때
+// 다만 영상의 마지막 프레임(ST.LAST)보다 늦게 끝나면 그 장에 다 나오지 않으므로, 길이가 아주 짧거나 fps 가 낮으면 마지막 프레임에 맞춘다
+// 순위 변동판은 앞 절반쯤(SPAN)에 처음 순위를 다 보여 주고, SWAP 초부터 줄들이 다음 자리로 옮겨 간다
+const SPAN = NEXT ? DUR * 0.46 : DUR;
+const REVEAL = Math.max(0, Math.min(SPAN * 0.62, SPAN - 0.3, ST.LAST - 1e-4));
+const SWAP = NEXT ? DUR * 0.54 : Infinity, MOVE = NEXT ? Math.min(1.1, DUR * 0.11) : 0, LAG = 0.07;      // 옮기기 시작하는 때 · 한 줄이 옮겨 가는 시간 · 줄마다 늦추는 시간
+const smooth = p => p * p * (3 - 2 * p);
+const moved = (t, i) => NEXT ? smooth(at(t, SWAP + NSLOT[i] * LAG, MOVE)) : 0;                            // i번째 줄이 다음 자리로 옮겨 간 정도(0→1)
+if (NEXT && SWAP + (N - 1) * LAG + MOVE > ST.LAST + 1e-6) ISSUES.push('영상이 너무 짧아 순위 변동이 마지막 화면까지 끝나지 않음');
+const PACE = Math.min(1, REVEAL * 0.5 / ROW_TIME);               // 영상이 짧으면 한 줄의 동작을 이만큼 줄인다
+const T0 = Math.min(0.7, REVEAL * 0.15);
+const GAP = N > 1 ? Math.max(0, Math.min(0.7, (REVEAL - T0 - ROW_TIME * PACE) / (N - 1))) : 0;
+const start = i => T0 + (N - 1 - i) * GAP;
+const step = (t, i, from, len) => at(t, start(i) + from * PACE, len * PACE);      // i번째 줄의 동작 한 토막(0→1)
+if (start(0) + ROW_TIME * PACE > ST.LAST + 1e-6) ISSUES.push('영상이 너무 짧아 마지막 화면에 1위가 다 나오지 않음');
+
+// ---------- 한 번만 구워 두는 것: 배경판과 마감 층 ----------
+const PLATE = (() => {
+  const e = B.mk(PW, PH), g = e.getContext('2d'), R = B.rng(8);
+  if (typeof SK.backdrop === 'function') { SK.backdrop({ g, B, PW, PH, U }); return e; }      // 화풍이 줄 때: 배경판을 화풍이 직접 그린다
+  if (SK.plain) { g.fillStyle = SK.bg; g.fillRect(0, 0, PW, PH); return e; }        // 화풍이 줄 때: 민색 바탕(한 점에서 뻗는 줄무늬는 쓰지 않는다)
+  if (SK.touch) { B.touch(g, PW, PH, { color: SK.bg, seed: 5, u: U, ...SK.touch }); return e; }      // 화풍이 줄 때: 붓 자국으로 채운 바탕
+  g.fillStyle = B.tex(SK.bg, 'paper', U); g.fillRect(0, 0, PW, PH);
+  B.mottle(g, PW, PH, { seed: 5, light: SK.bgLight, dark: SK.bgDark, u: U, n: Math.round(34 * PW * PH / (518400 * U * U)) });
+  B.on(g, () => [[PW - 330 * U, -30 * U, PW + 30 * U, 210 * U], [-30 * U, PH - 210 * U, 330 * U, PH + 30 * U]].forEach(([x0, y0, x1, y1], n) => {
+    for (let i = 0; i < 8; i++) {       // 모서리를 마른 붓으로 쓸고 간 자국
+      const o = ((i - 3.5) * 26 + R() * 10) * U; g.globalAlpha = .07 + R() * .10;
+      B.ink(B.seg(x0 + o, y0 - o * .5, x1 + o, y1 - o * .5, 9 * U), (15 + R() * 16) * U, SK.bgLight, 300 + n * 20 + i, { taper: .4, wob: .2 });
+    } }));
+  const spot = g.createRadialGradient(PW / 2, PH * .46, 30 * U, PW / 2, PH * .46, 470 * U);      // 가운데를 살짝 밝힌다
+  spot.addColorStop(0, 'rgba(130,160,255,.20)'); spot.addColorStop(1, 'rgba(130,160,255,0)');
+  g.globalAlpha = 1; g.fillStyle = spot; g.fillRect(0, 0, PW, PH);
+  return e;
+})();
+const WASH = B.wash(PW, PH, 12, U), GRAIN = B.grain(PW, PH, 3, U);
+const MEDAL = B.ell(0, 0, 20, 20);
+
+// 소품 아이콘(화풍이 시트를 줄 때만). code = 'A04' · 'B01' …
+const ICONS = SK.icons || null;
+function icon(code, cx, cy, size, alpha = 1) {
+  const im = ICONS && code ? ICONS[code[0]] : null; if (!im || !im.naturalWidth || alpha <= 0) return;
+  const n = +code.slice(1) - 1;
+  X.save(); X.globalAlpha *= Math.min(1, alpha);
+  X.drawImage(im, (n % 5) * ICONS.cell + ICONS.inset, Math.floor(n / 5) * ICONS.cell + ICONS.inset, ICONS.crop, ICONS.crop, cx - size / 2, cy - size / 2, size, size);
+  X.restore();
+}
+const pop = p => p <= 0 ? 0 : p >= 1 ? 1 : back(p);          // 톡 튀어나오는 크기(0→1)
+const SETTLED = NEXT ? SWAP + (N - 1) * LAG + MOVE : Infinity;      // 순위 변동이 다 끝나는 때
+
+function title(t) {
+  const p = at(t, 0.05 * PACE, 0.45 * PACE); if (p <= 0) return;
+  const stars = half => (DECO.stars || []).forEach(([side, dx, dy, size, points, color], n) =>      // [왼쪽 -1·오른쪽 1, 가로·세로 거리, 크기, 꼭짓점 수, 색]
+    B.art(B.star(side * (half + dx * U), dy * U, size * U, points, points === 4 ? .32 : .45), { fill: color, lw: 2.4 * U, seed: 90 + n, drop: 2 * U, pool: 0 }));
+  // 순위 변동판: SWAP 초에 제목이 다음 제목으로 바뀐다(살짝 부풀었다 돌아오며)
+  const flip = NEXT ? at(t, SWAP - 0.15, 0.35) : 0, TT = flip >= 0.5 ? NEXT.title : J.title, bump = 1 + 0.07 * Math.sin(Math.PI * flip);
+  if (TPLATE) {       // 화풍이 줄 때: 판 하나에 글자 한 겹(테두리·두께·윤기를 쌓지 않는다)
+    const P = DECO.plate, d = B.rrd(-TPLATE.w / 2, -TPLATE.h / 2, TPLATE.w, TPLATE.h, 14 * U);
+    X.save(); X.translate(PW / 2, TPLATE.cy); const s = back(p) * bump; X.scale(s, s); X.globalAlpha = clamp01(p * 3);
+    B.paint(d, { fill: P.fill, tex: 'paint', scale: U, drop: 4 * U, pool: 0 });
+    if (P.line) B.outline(d, 3 * U, P.line, 301);
+    B.text(TT, 0, TFIT.px * 0.36, TFIT.px, { align: 'center', color: P.color, maxW: TPLATE.w - 40 * U });
+    stars(TPLATE.w / 2);
+    // 제목 옆 소품 하나: 의뢰가 고른 것(J.icon), 없으면 시상대. 순위 변동으로 1위가 바뀌면 다 옮겨 간 뒤 트로피로 바뀐다
+    const isz = 56 * U, ix = -TPLATE.w / 2 - 16 * U - isz / 2, won = NEXT && NEXT.rows[0].id !== ROWS[0].id ? at(t, SETTLED + 0.1, 0.3) : 0;
+    if (PW / 2 + ix - isz / 2 >= Math.max(SAFE.l, 8 * U)) {
+      if (won < 1) icon(J.icon || 'B05', ix, 0, isz * (1 - won));
+      if (won > 0) icon('B01', ix, 0, isz * pop(won));
+    }
+    X.restore(); return;
+  }
+  X.save(); X.translate(PW / 2, 80 * U); const s = back(p) * bump; X.scale(s, s); X.globalAlpha = clamp01(p * 3);
+  if (DECO.tilt) X.rotate(DECO.tilt * Math.PI / 180);
+  const r = B.text(TT, 0, 0, TITLE_PX, { align: 'center', color: SK.yel, outline: 10 * U, tex: true, block: Math.max(2, Math.round(4 * U)), gloss: true, maxW: PW - 2 * MX });
+  stars(r.w / 2);
+  X.restore();
+  const u = at(t, 0.35 * PACE, 0.4 * PACE);      // 제목 아래 붓 밑줄(제목이 기울었으면 같이 기운다)
+  if (u > 0) { X.save(); X.translate(PW / 2, 80 * U); if (DECO.tilt) X.rotate(DECO.tilt * Math.PI / 180);
+    B.ink(B.seg(-r.w * 0.46, 22 * U, r.w * 0.46, 22 * U, 6 * U), 5 * U, SK.yel, 9, { to: u, taper: .25 }); X.restore(); }
+}
+
+function row(i, t) {
+  const base = ROWS[i], a = step(t, i, 0, 0.32); if (a <= 0) return;
+  // 순위 변동판: m 만큼 다음 자리로 옮겨 가 있고, 절반을 넘으면 순위·값·1위 테가 다음 것으로 바뀐다
+  const m = moved(t, i), nr = NEXT ? NROW[i] : null, r = m >= 0.5 ? nr : base, slot = NEXT ? i + (NSLOT[i] - i) * m : i % PER;
+  const ox = MX + Math.floor(i / PER) * (COLW + GAPX), y = TOP + slot * PITCH, x0 = ox + STRIP0, x1 = ox + COLW, top = r.rank === 1;
+  const val = NEXT ? (base.value ?? 0) + ((nr.value ?? 0) - (base.value ?? 0)) * m : r.value;      // 막대는 값이 바뀌는 만큼 늘거나 준다
+  const mid = y + SH / 2 + PX * 0.36;      // 글자를 띠의 세로 가운데에 놓는 기준선
+  X.save(); X.globalAlpha = clamp01(a * 2.2); X.translate((1 - easeOut(a)) * 46 * U, 0);
+  if (top) {        // 1위는 띠 둘레에 노란 테를 두른다
+    const g = step(t, i, 0.35, 0.4);
+    if (g > 0) { X.save(); X.globalAlpha *= g; B.paint(B.rrd(x0 - 6 * U, y - 6 * U, STRIPW + 12 * U, SH + 12 * U, 14 * U), { fill: SK.yel, scale: U, pool: 0 }); X.restore(); }
+  }
+  B.art(B.rrd(x0, y, STRIPW, SH, 10 * U), { fill: SK.paper, tex: 'paper', scale: U, lw: 2.6 * U, seed: 20 + i, drop: (3.5 + 5 * Math.sin(Math.PI * m)) * U, shade: 2.2 * U, pool: 4 * U });
+  if (r.out) { X.save(); X.globalAlpha *= 0.2 * clamp01((m - 0.5) * 4); X.fillStyle = SK.ink; X.beginPath(); X.roundRect(x0, y, STRIPW, SH, 10 * U); X.fill(); X.restore(); }      // 빠진 줄(탈락·기권)은 띠를 어둡게 가라앉힌다
+  // 순위 메달
+  const cx = ox + BR, cy = y + SH / 2, medal = SK.medal[r.rank - 1], k = BR / 20, rp = BR * (String(r.rank).length > 1 ? 0.95 : 1.15);
+  X.save(); X.translate(cx, cy); X.scale(k, k);
+  B.art(MEDAL, { fill: medal || SK.paper, tex: medal ? 'paint' : 'paper', lw: 2.8, seed: 40 + i, shade: 2.5, drop: 2.5, pool: 3 });
+  X.restore();
+  B.text(String(r.rank), cx, cy + rp * 0.36, rp, { align: 'center' });
+  // (1위 메달 둘레로 뻗던 반짝이 선은 뺐다 — 동그라미에서 선이 뻗는 모양은 쓰지 않는다)
+  B.text(r.name, x0 + PAD, mid, PX, { maxW: NAME_W });
+  if (NEXT && ICONS) {      // 순위 변동판의 작은 표시: 다 옮겨 간 뒤, 오른 줄에는 위 화살표·내린 줄에는 아래 화살표. 빠진 줄에는 흰 깃발
+    const done = at(t, SETTLED + 0.1 + NSLOT[i] * 0.05, 0.3), code = nr.rank < base.rank ? 'B09' : nr.rank > base.rank ? 'B10' : null;
+    if (code && !nr.out) icon(code, ox + BR * 2 + 7 * UX, cy - BR * 0.72, BR * 1.3 * pop(done));
+    if (nr.out) icon('B15', x1 - PAD - Math.min(VAL_W, width(nr.show, PX)) - SH * 0.5, y + SH / 2, SH * 0.82, clamp01((m - 0.5) * 4));
+  }
+  // 막대: 가장 큰 값을 기준으로 한 길이까지 자란다
+  if (BARS && val > 0) {
+    const len = Math.round(BARW * (val / TOPV) * easeOut(step(t, i, 0.22, 0.6)) * 2) / 2;
+    if (len >= 5 * U) B.art(B.rrd(ox + BAR0, y + SH * 0.26, len, SH * 0.48, Math.min(7 * U, len / 2)), { fill: SK.bar[Math.min(r.rank, SK.bar.length) - 1], scale: U, lw: 2.2 * U, seed: 60 + i, shade: 2 * U, pool: 3 * U });
+  }
+  // 값: 받은 글자 그대로
+  const v = step(t, i, BARS ? 0.62 : 0.3, 0.25);
+  if (v > 0) { X.save(); X.globalAlpha *= v * (NEXT ? Math.min(1, Math.abs(m - 0.5) * 6) : 1); B.text(r.show, x1 - PAD, mid, PX, { align: 'right', maxW: VAL_W }); X.restore(); }
+  X.restore();
+}
+
+function content(t) {
+  B.boil = 0;
+  X.drawImage(PLATE, 0, 0);
+  title(t);
+  // 순위 변동판에서는 위로 올라가는 줄을 나중에 그려, 내려가는 줄 위로 지나가게 한다
+  const order = [...ROWS.keys()].reverse();
+  if (NEXT) order.sort((a, b) => (a - NSLOT[a]) - (b - NSLOT[b]));
+  for (const i of order) row(i, t);
+  if (typeof SK.overlay === 'function') SK.overlay({ X, B, U, PW, PH, J, t, TITLE: TBOX, show: at(t, 0.05 * PACE, 0.45 * PACE) });      // 화풍이 줄 때: 줄 위에 얹는 한 겹
+  // 종이 마감: 큰 얼룩 → 알갱이 → 가장자리 어둡게
+  X.save();
+  X.globalCompositeOperation = 'soft-light';
+  if (SK.finish.wash) { X.globalAlpha = SK.finish.wash; X.drawImage(WASH, 0, 0); }
+  if (SK.finish.grain) { X.globalAlpha = SK.finish.grain; X.drawImage(GRAIN, 0, 0); }
+  X.globalCompositeOperation = 'source-over'; X.globalAlpha = 1;
+  const vg = X.createRadialGradient(PW / 2, PH / 2, 250 * U, PW / 2, PH / 2, 620 * U); vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, SK.finish.edge);
+  X.fillStyle = vg; X.fillRect(0, 0, PW, PH);
+  X.restore();
+}
+
+ST.run(content, null, () => [...new Set(ISSUES)]);
+});
+</script>
+</body>
+</html>
