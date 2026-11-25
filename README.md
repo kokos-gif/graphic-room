@@ -15,23 +15,23 @@
 **Liner 키(`LINER_API_KEY`) 하나로 전부 돈다.** 호출은 의뢰 번호로 묶어 `data/liner_calls.jsonl` 에 남고, 카드마다 그 의뢰가 쓴 Liner 가 한 줄로 보인다
 (`⚡ Liner 3번 · 9초 · 약 $0.012 — 읽기 gpt-6-sol · 감사 claude-sonnet-5.5` — 라우터가 일마다 실제로 고른 모델 · 비용은 문서 단가로 어림).
 
-| 기능 | Liner API | 쓰는 것 | 코드 | 언제 |
-|---|---|---|---|---|
-| **의뢰서 그림 받아쓰기** — 다른 읽기보다 먼저 손글씨 · 스케치의 글씨를 틀 없이 그대로 받아 적고 요약한다. 받아 적은 글은 CG Director · 의뢰 읽기에 그림과 함께 넘기고, 판독 감사에는 넘기지 않는다(감사는 그림을 따로 읽는다) | **Model** | `liner-gpt-router` · `quality` · 그림 입력 · 평범한 글 출력(JSON 틀 없음). 받아 적은 글은 진행 표시에 보인다 | `transcribe.py` | 그림 · PDF 를 붙였을 때 1번(앱으로 켰을 때, `MAPCG_SHEET=off` 면 끈다) |
-| **CG Director — 접수**: 의뢰를 맨 먼저 읽고 [실무 확인 목록](노하우_실무확인목록.md)을 적용해 일을 나눈다(전문 담당 하나 + 틀 밖은 임시 담당) | **Model 도구 호출(`tools`)** + **Search** | `liner-claude-router` — `search_web`(`/tools/search/web`, 헷갈리는 장소 · 이름) · `check_fact`(`/agents/quick-answer`, 화면 속 공개 사실) · `assign` · `custom` · `ask` · `finish`. 접수 판단 카드에 적용한 번호 · 의뢰 원문 근거 · 검색 출처 | `director.py` · `knowhow.json` | 의뢰마다 맨 먼저(앱으로 켰을 때, `MAPCG_FRONT=off` 면 끈다) |
-| 의뢰 읽기 — 글 · 의뢰서 그림 · PDF(앞 3쪽을 그림으로) | **Model** | `liner-gpt-router`(기본, `LINER_MODEL`) · 그림 입력 · JSON 스키마 출력 | `intake.py` · `board.py` · `plan.py` · `quiz.py` | 의뢰마다 1번 |
-| 판독 감사 — 읽은 값을 원문과 다시 대조 | **Model** | 읽은 쪽과 다른 라우터(`liner-claude-router` 등) | `audit.py` | 지도 의뢰마다 1번 |
-| 음성 의뢰 받아쓰기 | Model(받아쓰기) | `/audio/transcriptions` | `voice.py` | 음성을 붙였을 때 |
-| 지명을 지도에서 찾을 이름으로 | **Model** | 적힌 지명 → 정식 이름 · 종류 | `intake.official_names` | 컷 나눔 · 각자 이동 |
-| 지도에 없는 지명 확인 | **Search** + Model | `/tools/search/web` 결과를 근거로 정식 이름 · 지도 후보를 고르고 출처 주소를 남김(근거 없는 답은 버림) | `intake.searched_name` · `intake.picked_place` | 지명 서버가 못 찾았을 때 |
-| 수정 지시 — '도착지만 바꿔 줘' | **Model** | 바뀔 항목만 뽑아 확인 카드에 표시 | `revise.py` | 결과 카드에서 고칠 점을 보낼 때 |
-| 맞춤 그래픽 메인 에이전트 | **Model 도구 호출(`tools`)** | `liner-claude-router` — `research` · `write_brief` · `spawn_worker` · `report_unable` · `redo_worker` · `deliver` | `scene.py` | 틀 없는 의뢰 · 남은 요청 |
-| **자료 찾기** — 의뢰 글에 없는 공개 사실(기록 · 순위 · 수치) | **Search(에이전트)** | `/agents/quick-answer` — 출처(사이트 · 날짜 · 원문)가 붙은 답. 사실의 근거는 의뢰 글이나 이 출처 원문에 있어야 받는다(지어내기 금지) · 지시서 카드와 화면 아래 주석에 출처 | `liner.research` · `scene.plan_request` | 메인이 research 를 부를 때(의뢰마다 2번까지) |
-| 맞춤 그래픽 담당(서브 에이전트) | **Model 도구 호출(`tools`)** | `liner-claude-router` — `draw_draft` · `request_review` · `submit` · `give_up`(순서는 담당이 정한다) | `scene.py` | 지시서 카드에서 만들 때 |
-| 시안 검수 — 확인할 점마다 예/아니오 + 근거 | **Model** 그림 읽기 | `liner-gpt-router` · JSON 스키마 | `scene.judge` | 담당이 검수를 부를 때 |
-| 완성 화면 검수 — 영상의 글자를 읽어 의뢰와 대조 | **Model** 그림 읽기 | `liner-gpt-router` | `proof.py` | 영상을 내보낸 뒤 |
-| 카드 퀴즈 그림 · 이동 아이콘 그림 | 이미지 생성 | `/images/generations` | `quiz_build.py` · `icons.py` | 새 그림이 필요할 때(한 번 그린 것은 보관해 다시 씀) |
-| **맞춤 그래픽의 항목 그림** — 줄 목록 · 나란히 배치에서 아이콘이 없는 항목 이름(곰인형 · 기차 · 만원 …)에 맞는 작은 그림을 붙인다. 글 모델이 낱말마다 그릴 물건을 고르고(사람 · 상표 · 글자는 고르지 않는다), 그림 모델이 우리 아이콘 시트를 보고 같은 화풍으로 그린다 | Model · 이미지 생성 | 낱말 고르기 1번 + `/images/generations`(새 물건마다 1번, 장당 약 0.014달러 · 10초쯤). 75초 안에 안 오면 그 시안은 그림 없이 그린다 | `scene.py`(`attach_pictures`) · `icons.py` | 맞춤 그래픽을 만들 때(앱으로 켰을 때, `MAPCG_SCENE_PICS=off` 면 끈다. 한 번 그린 것은 보관해 다시 씀) |
+| 기능 | Liner API | 쓰는 것 · 코드 · 언제 |
+|---|---|---|
+| **의뢰서 그림 받아쓰기** — 다른 읽기보다 먼저 손글씨 · 스케치의 글씨를 틀 없이 그대로 받아 적고 요약한다. 받아 적은 글은 CG Director · 의뢰 읽기에 그림과 함께 넘기고, 판독 감사에는 넘기지 않는다(감사는 그림을 따로 읽는다) | **Model** | `liner-gpt-router` · `quality` · 그림 입력 · 평범한 글 출력(JSON 틀 없음). 받아 적은 글은 진행 표시에 보인다<br>코드: `transcribe.py`<br>언제: 그림 · PDF 를 붙였을 때 1번(앱으로 켰을 때, `MAPCG_SHEET=off` 면 끈다) |
+| **CG Director — 접수**: 의뢰를 맨 먼저 읽고 [실무 확인 목록](노하우_실무확인목록.md)을 적용해 일을 나눈다(전문 담당 하나 + 틀 밖은 임시 담당) | **Model 도구 호출(`tools`)** + **Search** | `liner-claude-router` — `search_web`(`/tools/search/web`, 헷갈리는 장소 · 이름) · `check_fact`(`/agents/quick-answer`, 화면 속 공개 사실) · `assign` · `custom` · `ask` · `finish`. 접수 판단 카드에 적용한 번호 · 의뢰 원문 근거 · 검색 출처<br>코드: `director.py` · `knowhow.json`<br>언제: 의뢰마다 맨 먼저(앱으로 켰을 때, `MAPCG_FRONT=off` 면 끈다) |
+| 의뢰 읽기 — 글 · 의뢰서 그림 · PDF(앞 3쪽을 그림으로) | **Model** | `liner-gpt-router`(기본, `LINER_MODEL`) · 그림 입력 · JSON 스키마 출력<br>코드: `intake.py` · `board.py` · `plan.py` · `quiz.py`<br>언제: 의뢰마다 1번 |
+| 판독 감사 — 읽은 값을 원문과 다시 대조 | **Model** | 읽은 쪽과 다른 라우터(`liner-claude-router` 등)<br>코드: `audit.py`<br>언제: 지도 의뢰마다 1번 |
+| 음성 의뢰 받아쓰기 | Model(받아쓰기) | `/audio/transcriptions`<br>코드: `voice.py`<br>언제: 음성을 붙였을 때 |
+| 지명을 지도에서 찾을 이름으로 | **Model** | 적힌 지명 → 정식 이름 · 종류<br>코드: `intake.official_names`<br>언제: 컷 나눔 · 각자 이동 |
+| 지도에 없는 지명 확인 | **Search** + Model | `/tools/search/web` 결과를 근거로 정식 이름 · 지도 후보를 고르고 출처 주소를 남김(근거 없는 답은 버림)<br>코드: `intake.searched_name` · `intake.picked_place`<br>언제: 지명 서버가 못 찾았을 때 |
+| 수정 지시 — '도착지만 바꿔 줘' | **Model** | 바뀔 항목만 뽑아 확인 카드에 표시<br>코드: `revise.py`<br>언제: 결과 카드에서 고칠 점을 보낼 때 |
+| 맞춤 그래픽 메인 에이전트 | **Model 도구 호출(`tools`)** | `liner-claude-router` — `research` · `write_brief` · `spawn_worker` · `report_unable` · `redo_worker` · `deliver`<br>코드: `scene.py`<br>언제: 틀 없는 의뢰 · 남은 요청 |
+| **자료 찾기** — 의뢰 글에 없는 공개 사실(기록 · 순위 · 수치) | **Search(에이전트)** | `/agents/quick-answer` — 출처(사이트 · 날짜 · 원문)가 붙은 답. 사실의 근거는 의뢰 글이나 이 출처 원문에 있어야 받는다(지어내기 금지) · 지시서 카드와 화면 아래 주석에 출처<br>코드: `liner.research` · `scene.plan_request`<br>언제: 메인이 research 를 부를 때(의뢰마다 2번까지) |
+| 맞춤 그래픽 담당(서브 에이전트) | **Model 도구 호출(`tools`)** | `liner-claude-router` — `draw_draft` · `request_review` · `submit` · `give_up`(순서는 담당이 정한다)<br>코드: `scene.py`<br>언제: 지시서 카드에서 만들 때 |
+| 시안 검수 — 확인할 점마다 예/아니오 + 근거 | **Model** 그림 읽기 | `liner-gpt-router` · JSON 스키마<br>코드: `scene.judge`<br>언제: 담당이 검수를 부를 때 |
+| 완성 화면 검수 — 영상의 글자를 읽어 의뢰와 대조 | **Model** 그림 읽기 | `liner-gpt-router`<br>코드: `proof.py`<br>언제: 영상을 내보낸 뒤 |
+| 카드 퀴즈 그림 · 이동 아이콘 그림 | 이미지 생성 | `/images/generations`<br>코드: `quiz_build.py` · `icons.py`<br>언제: 새 그림이 필요할 때(한 번 그린 것은 보관해 다시 씀) |
+| **맞춤 그래픽의 항목 그림** — 줄 목록 · 나란히 배치에서 아이콘이 없는 항목 이름(곰인형 · 기차 · 만원 …)에 맞는 작은 그림을 붙인다. 글 모델이 낱말마다 그릴 물건을 고르고(사람 · 상표 · 글자는 고르지 않는다), 그림 모델이 우리 아이콘 시트를 보고 같은 화풍으로 그린다 | Model · 이미지 생성 | 낱말 고르기 1번 + `/images/generations`(새 물건마다 1번, 장당 약 0.014달러 · 10초쯤). 75초 안에 안 오면 그 시안은 그림 없이 그린다<br>코드: `scene.py`(`attach_pictures`) · `icons.py`<br>언제: 맞춤 그래픽을 만들 때(앱으로 켰을 때, `MAPCG_SCENE_PICS=off` 면 끈다. 한 번 그린 것은 보관해 다시 씀) |
 
 그림 · 글자 · 움직임은 모델이 아니라 우리 그리기 코드가 그린다 — 모델은 읽고 · 설계하고 · 검수한다(모델이 만든 코드는 실행하지 않는다).
 
